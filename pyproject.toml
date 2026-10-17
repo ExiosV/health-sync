@@ -1,0 +1,19 @@
+[project]
+name = "health-sync"
+version = "0.2.0"
+description = "Sync and export health and fitness data between services"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "garminconnect",
+    "gspread",
+    "google-auth",
+    "requests",
+    "python-dotenv",
+]
+
+[project.scripts]
+health-sync = "health_sync.cli:main"
+
+[tool.setuptools]
+packages = ["health_sync", "health_sync.core", "health_sync.connectors"]
