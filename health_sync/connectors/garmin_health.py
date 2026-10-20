@@ -34,6 +34,26 @@ def _local_hhmm(ms: Any) -> str:
     return datetime.utcfromtimestamp(ms / 1000).strftime("%H:%M") if _num(ms) else ""
 
 
+def _local_dt(ms: Any) -> str:
+    """`*TimestampLocal` (epoch millis shifted to local wall time) -> 'YYYY-MM-DD HH:MM:SS'."""
+    return datetime.utcfromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M:%S") if _num(ms) else ""
+
+
+def normalize_sleep(sleep: dict[str, Any]) -> dict[str, Any]:
+    """Flatten a `get_sleep_data` response into the fields a calendar event needs."""
+    dto = _get(sleep, "dailySleepDTO", default={}) or {}
+    return {
+        "start": _local_dt(dto.get("sleepStartTimestampLocal")),
+        "end": _local_dt(dto.get("sleepEndTimestampLocal")),
+        "total_h": _hours(dto.get("sleepTimeSeconds")),
+        "deep_h": _hours(dto.get("deepSleepSeconds")),
+        "light_h": _hours(dto.get("lightSleepSeconds")),
+        "rem_h": _hours(dto.get("remSleepSeconds")),
+        "awake_h": _hours(dto.get("awakeSleepSeconds")),
+        "score": _get(dto, "sleepScores", "overall", "value"),
+    }
+
+
 def normalize_daily(raw: dict[str, Any]) -> dict[str, Any]:
     u, sleep, hrv = raw.get("user_summary") or {}, raw.get("sleep") or {}, raw.get("hrv") or {}
     ready = raw.get("readiness") or {}
@@ -81,6 +101,7 @@ def _kg(grams: Any) -> Any:
 class GarminHealthSource(GarminSource):
     name = "garmin"
     default_days = 14  # first run, when there is no cursor yet
+    days_env = "GARMIN_HEALTH_DAYS"
 
     def fetch(self, since: str | None = None) -> Iterable[Record]:
         api = self._client()
@@ -88,7 +109,7 @@ class GarminHealthSource(GarminSource):
         if since:
             day = date.fromisoformat(since[:10]) + timedelta(days=1)
         else:
-            day = today - timedelta(days=int(os.getenv("GARMIN_HEALTH_DAYS", self.default_days)))
+            day = today - timedelta(days=int(os.getenv(self.days_env, self.default_days)))
         while day < today:  # only finished days: today's numbers are still changing
             yield from self._day(api, day.isoformat())
             day += timedelta(days=1)
@@ -113,6 +134,9 @@ class GarminHealthSource(GarminSource):
                 log.warning("%s %s: %s", d, key, str(exc)[:100])
             time.sleep(0.3)
         yield Record("daily", self.name, d, d, normalize_daily(raw), raw)
+        sleep = normalize_sleep(raw.get("sleep") or {})
+        if sleep["start"]:
+            yield Record("sleep", self.name, d, sleep["start"], sleep, raw.get("sleep") or {})
         for m in _get(raw.get("blood_pressure"), "bloodPressureMeasurements", default=[]):
             ts = m.get("measurementTimestampLocal") or d
             yield Record("blood_pressure", self.name, ts, ts[:19].replace("T", " "), {
