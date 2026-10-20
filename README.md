@@ -37,7 +37,8 @@ The calendar target is not hard-coded, so the same code serves any person or a h
 `calendar-ls` prints the id/name pairs. `CALENDAR_KINDS` picks which records become events (`activity,sleep` by
 default), `CALENDAR_TIMEZONE` overrides the calendar's own timezone, and `CALENDAR_SUMMARY_PREFIX` tags event titles.
 Each event gets a deterministic id from the source record, so re-runs update it in place instead of duplicating.
-Re-issue the refresh token (`scripts/get_google_token.py`) after this change: it now also needs the Calendar scope.
+Enable the Google Calendar API in the OAuth project and re-issue the refresh token (`scripts/get_google_token.py`) after
+this change: it now also needs the Calendar scope.
 
 Typical deployment is a container (see `Dockerfile`) with two CronJobs and one small Deployment; the image entrypoint is
 `python -m health_sync`.
