@@ -7,6 +7,10 @@ all-day when Garmin only gives a date), and the daily summary becomes one all-da
 target calendar is never hard-coded: it comes from `GOOGLE_CALENDAR_ID`, or is looked up by
 name (`GOOGLE_CALENDAR_NAME`, e.g. "Дневник"), and falls back to `primary`. Events are tagged
 in `extendedProperties.private` so they can be told apart from anything a person created.
+
+Times: Garmin supplies local wall time and GMT, so every timed event carries the exact UTC offset of the place where it
+happened (travel and DST changes are handled by the data, not by a configured zone). `CALENDAR_TIMEZONE` is only the
+fallback for records without an offset.
 """
 from __future__ import annotations
 
@@ -22,6 +26,7 @@ from google.auth.transport.requests import AuthorizedSession
 
 from health_sync.connectors import google_auth
 from health_sync.core.model import Record
+from health_sync.core.timeutil import format_offset
 
 log = logging.getLogger(__name__)
 
@@ -29,10 +34,10 @@ API = "https://www.googleapis.com/calendar/v3"
 
 
 def event_id(source: str, kind: str, external_id: str) -> str:
-    """Deterministic Calendar event id ([0-9a-f]) from the canonical dedup key.
+    """Deterministic Calendar event id from the canonical dedup key.
 
-    Calendar ids must be 5-1024 chars of [a-v0-9], so a sha256 hex digest is stable across
-    runs and safe to use as an upsert key.
+    Calendar ids must be 5-1024 characters from [a-v0-9] (base32hex); a sha256 hex digest (0-9, a-f, 64
+    characters) fits that alphabet, is stable across runs and is safe to use as an upsert key.
     """
     return hashlib.sha256(f"{source}|{kind}|{external_id}".encode()).hexdigest()
 
@@ -77,6 +82,8 @@ def _activity_description(p: dict[str, Any], url: str = "") -> str:
         lines.append(f"Калории: {p['calories']}")
     if p.get("te_aerobic") or p.get("te_anaerobic"):
         lines.append(f"Training Effect: {p.get('te_aerobic')} / {p.get('te_anaerobic')} {p.get('te_label', '')}".rstrip())
+    if p.get("location"):
+        lines.append(f"Место: {p['location']}")
     if url:
         lines.append(f"Garmin: {url}")
     return "\n".join(lines)
@@ -202,7 +209,18 @@ def _is_date_only(value: Any) -> bool:
     return len(str(value or "").strip()) <= 10
 
 
-def _timed(start: datetime, end: datetime, timezone: str | None) -> tuple[dict[str, Any], dict[str, Any]]:
+def _offset(payload: dict[str, Any]) -> int | None:
+    value = payload.get("utc_offset_min")
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _timed(start: datetime, end: datetime, timezone: str | None,
+           offset: int | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Timed span. With a known UTC offset the instants are exact (RFC 3339 with offset) and independent of any
+    calendar or viewer time zone, DST or travel; otherwise the wall time is left to `timezone` / the calendar."""
+    if offset is not None:
+        suffix = format_offset(offset)
+        return {"dateTime": _iso(start) + suffix}, {"dateTime": _iso(end) + suffix}
     first: dict[str, Any] = {"dateTime": _iso(start)}
     last: dict[str, Any] = {"dateTime": _iso(end)}
     if timezone:
@@ -242,9 +260,8 @@ def build_event(record: Record, *, timezone: str | None = None, prefix: str = ""
                 point_minutes: int = 10) -> dict[str, Any] | None:
     """Map one Record to a Calendar event body, or None when it has no usable time span.
 
-    Times are written as local wall time (no offset); when `timezone` is empty Google Calendar
-    resolves them in the target calendar's own timezone, which keeps the sync portable between
-    people who keep their calendars in different zones.
+    Timed events use the record's `utc_offset_min` when present (exact instants); otherwise the wall time is written
+    without offset and, when `timezone` is empty, Google Calendar resolves it in the calendar's own timezone.
 
     Measurements with only a date (no time of day) and the daily summary become all-day
     events; everything with a real instant gets a short timed event of `point_minutes`.
@@ -263,7 +280,7 @@ def build_event(record: Record, *, timezone: str | None = None, prefix: str = ""
             start, end = _all_day(record.start)
             return _event(record, summary, description, start, end, **common)
         start_dt = _parse_dt(record.start)
-        start, end = _timed(start_dt, start_dt + timedelta(minutes=point_minutes), timezone)
+        start, end = _timed(start_dt, start_dt + timedelta(minutes=point_minutes), timezone, _offset(p))
         return _event(record, summary, description, start, end, **common)
 
     if record.kind == "blood_pressure":
@@ -274,7 +291,7 @@ def build_event(record: Record, *, timezone: str | None = None, prefix: str = ""
             start, end = _all_day(record.start)
             return _event(record, summary, description, start, end, **common)
         start_dt = _parse_dt(record.start)
-        start, end = _timed(start_dt, start_dt + timedelta(minutes=point_minutes), timezone)
+        start, end = _timed(start_dt, start_dt + timedelta(minutes=point_minutes), timezone, _offset(p))
         return _event(record, summary, description, start, end, **common)
 
     if record.kind == "nap":
@@ -284,7 +301,7 @@ def build_event(record: Record, *, timezone: str | None = None, prefix: str = ""
             end_dt = start_dt + timedelta(minutes=float(p["duration_min"]))
         if not start_dt or not end_dt or end_dt <= start_dt:
             return None
-        start, end = _timed(start_dt, end_dt, timezone)
+        start, end = _timed(start_dt, end_dt, timezone, _offset(p))
         return _event(record, "Дневной сон", _nap_description(p), start, end, **common)
 
     if record.kind == "sleep":
@@ -294,7 +311,7 @@ def build_event(record: Record, *, timezone: str | None = None, prefix: str = ""
             end_dt = start_dt + timedelta(hours=float(p["total_h"]))
         if not start_dt or not end_dt or end_dt <= start_dt:
             return None
-        start, end = _timed(start_dt, end_dt, timezone)
+        start, end = _timed(start_dt, end_dt, timezone, _offset(p))
         return _event(record, "Сон", _sleep_description(p), start, end, **common)
 
     start_dt = _parse_dt(record.start)
@@ -303,7 +320,7 @@ def build_event(record: Record, *, timezone: str | None = None, prefix: str = ""
     end_dt = start_dt + timedelta(minutes=float(p.get("duration_min") or 0))
     if end_dt <= start_dt:
         return None
-    start, end = _timed(start_dt, end_dt, timezone)
+    start, end = _timed(start_dt, end_dt, timezone, _offset(p))
     return _event(record, p.get("name") or p.get("type") or "Активность",
                   _activity_description(p, f"https://connect.garmin.com/modern/activity/{record.external_id}"),
                   start, end, **common)
@@ -315,7 +332,7 @@ def _env_kinds() -> set[str]:
 
 
 def _session() -> AuthorizedSession:
-    return AuthorizedSession(google_auth.credentials())
+    return AuthorizedSession(google_auth.credentials("calendar"))
 
 
 def list_calendars(session: AuthorizedSession | None = None) -> list[dict[str, Any]]:

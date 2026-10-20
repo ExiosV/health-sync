@@ -30,6 +30,7 @@ class GarminCalendarSource(GarminHealthSource):
     def fetch(self, since: str | None = None) -> Iterable[Record]:
         yield from self._activities(self._cutoff(since), with_zones=False)
         yield from super().fetch(since)
+        yield from self._today_sleep()
         yield from self._today_measurements()
 
     def _cutoff(self, since: str | None) -> str | None:
@@ -38,6 +39,22 @@ class GarminCalendarSource(GarminHealthSource):
             return since
         days = int(os.getenv("GARMIN_CALENDAR_ACTIVITY_DAYS", os.getenv(self.days_env, self.default_days)))
         return (date.today() - timedelta(days=days)).isoformat() if days > 0 else None
+
+    def _today_sleep(self) -> Iterable[Record]:
+        """This morning's sleep (and naps) as soon as the watch has synced it, not a day later.
+
+        Sleep belongs to the wake-up date; it is final once the person is awake, unlike the rest of the day.
+        """
+        api = self._client()
+        d = date.today().isoformat()
+        try:
+            sleep = api.get_sleep_data(d)
+        except Exception as exc:  # a missing night must not drop the run
+            log.warning("%s sleep: %s", d, str(exc)[:100])
+            return
+        end = ((sleep or {}).get("dailySleepDTO") or {}).get("sleepEndTimestampGMT")
+        if isinstance(end, (int, float)) and end <= time.time() * 1000:  # still asleep / not synced: skip
+            yield from self._sleep_records(sleep, d)
 
     def _today_measurements(self) -> Iterable[Record]:
         """Weigh-ins and pressure readings of the unfinished day, so they appear the same day."""
