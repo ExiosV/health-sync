@@ -11,7 +11,7 @@ Design notes: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). License: Apache-2.0 
 |---|---|
 | `garmin-activities-to-sheet` | Garmin activities -> a Google Sheet (newest first) |
 | `garmin-health-to-drive` | daily summary (sleep, HRV, body battery, stress, readiness, steps...), blood pressure and weight tabs, raw JSON per day, and a monthly markdown digest in Drive |
-| `garmin-to-calendar` | Garmin activities and sleep intervals as events in a Google Calendar (target calendar configurable, see below) |
+| `garmin-to-calendar` | Garmin activities, sleep, weight and blood-pressure measurements, plus one all-day summary per day, as events in a Google Calendar (target calendar configurable, see below) |
 | `scale-ingest` | HTTP endpoint that receives scale measurements and uploads weight and estimated body fat to Garmin; people are told apart by weight (`SCALE_PERSONS`), only `SCALE_GARMIN_PERSONS` are uploaded, the rest are only saved |
 | `health_sync/scale/reader.py` | BLE reader for the scale; runs on any machine with Bluetooth and posts to the ingest endpoint |
 
@@ -19,7 +19,7 @@ Design notes: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). License: Apache-2.0 
 cp .env.example .env     # Garmin login, Google OAuth client + refresh token, spreadsheet ids
 pip install .
 python -m health_sync run garmin-activities-to-sheet
-python -m health_sync run garmin-to-calendar            # Garmin activities + sleep -> a Google Calendar
+python -m health_sync run garmin-to-calendar            # activities, sleep, weight, pressure, daily summary -> a Google Calendar
 python -m health_sync calendar-ls                        # list calendars (id + name) to configure the target
 python -m health_sync drive-ls --path "<Drive folder path>"
 python -m health_sync init-sheet --path "<Drive folder path>" --name "<file name>"   # prints the spreadsheet id
@@ -34,8 +34,11 @@ break when Garmin changes its API.
 
 The calendar target is not hard-coded, so the same code serves any person or a hosted run:
 `GOOGLE_CALENDAR_ID` wins, else `GOOGLE_CALENDAR_NAME` (e.g. `Дневник`) is looked up in the account, else `primary`.
-`calendar-ls` prints the id/name pairs. `CALENDAR_KINDS` picks which records become events (`activity,sleep` by
-default), `CALENDAR_TIMEZONE` overrides the calendar's own timezone, and `CALENDAR_SUMMARY_PREFIX` tags event titles.
+`calendar-ls` prints the id/name pairs. `CALENDAR_KINDS` picks which records become events
+(`activity,sleep,weight,blood_pressure,daily` by default), `CALENDAR_TIMEZONE` overrides the calendar's own timezone,
+and `CALENDAR_SUMMARY_PREFIX` tags event titles. Activities and sleep are timed events; weight and pressure are short
+timed events (`CALENDAR_POINT_MINUTES`, 10 by default) or all-day when Garmin only gives a date; `daily` is one all-day
+event per day with HRV, body battery, stress, readiness, SpO2, respiration and steps.
 Each event gets a deterministic id from the source record, so re-runs update it in place instead of duplicating.
 Enable the Google Calendar API in the OAuth project and re-issue the refresh token (`scripts/get_google_token.py`) after
 this change: it now also needs the Calendar scope.

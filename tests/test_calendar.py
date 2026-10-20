@@ -94,6 +94,75 @@ class BuildEventEnvTest(unittest.TestCase):
         self.assertNotIn("timeZone", event["start"])
 
 
+def weight_record(start="2026-10-17 07:05:00"):
+    payload = {"weight_kg": 78.5, "bmi": 24.1, "body_fat_pct": 18.2, "body_water_pct": 55.0,
+               "muscle_mass_kg": 60.1, "bone_mass_kg": 3.2}
+    return Record("weight", "garmin", "w1", start, payload)
+
+
+def pressure_record(start="2026-10-17 08:15:00"):
+    payload = {"systolic": 122, "diastolic": 78, "pulse": 64, "category": "NORMAL"}
+    return Record("blood_pressure", "garmin", "b1", start, payload)
+
+
+def daily_record():
+    payload = {"steps": 9123, "distance_km": 7.4, "resting_hr": 54, "min_hr": 48, "max_hr": 131,
+               "avg_stress": 27, "max_stress": 61, "body_battery_high": 98, "body_battery_low": 44,
+               "sleep_total_h": 7.5, "sleep_start": "23:10", "sleep_end": "07:00", "sleep_score": 80,
+               "hrv_last_night": 62, "hrv_status": "BALANCED", "spo2_avg": 96, "spo2_low": 90,
+               "respiration_avg": 14, "readiness_score": 81, "readiness_level": "HIGH",
+               "recovery_time_h": 12.0, "floors_up": 11, "active_kcal": 640}
+    return Record("daily", "garmin", "2026-10-17", "2026-10-17", payload)
+
+
+class MeasurementsTest(unittest.TestCase):
+    def test_weight_is_a_short_timed_event(self):
+        event = build_event(weight_record(), timezone="Europe/Moscow")
+        self.assertEqual(event["summary"], "Вес: 78.5 кг")
+        self.assertEqual(event["start"]["dateTime"], "2026-10-17T07:05:00")
+        self.assertEqual(event["end"]["dateTime"], "2026-10-17T07:15:00")
+        self.assertEqual(event["start"]["timeZone"], "Europe/Moscow")
+        self.assertIn("Жир: 18.2 %", event["description"])
+
+    def test_blood_pressure(self):
+        event = build_event(pressure_record(), point_minutes=5)
+        self.assertEqual(event["summary"], "Давление: 122/78")
+        self.assertEqual(event["end"]["dateTime"], "2026-10-17T08:20:00")
+        self.assertIn("Пульс: 64", event["description"])
+
+    def test_measurement_without_time_is_all_day(self):
+        event = build_event(weight_record(start="2026-10-17"))
+        self.assertEqual(event["start"], {"date": "2026-10-17"})
+        self.assertEqual(event["end"], {"date": "2026-10-18"})
+        self.assertNotIn("dateTime", event["start"])
+
+    def test_daily_summary_is_all_day(self):
+        event = build_event(daily_record())
+        self.assertEqual(event["summary"], "Здоровье за день")
+        self.assertEqual(event["start"], {"date": "2026-10-17"})
+        self.assertEqual(event["end"], {"date": "2026-10-18"})
+        self.assertEqual(event["extendedProperties"]["private"]["healthSyncKind"], "daily")
+        for expected in ("Шаги: 9123", "HRV: 62", "Body Battery", "Готовность: 81", "SpO2: 96"):
+            self.assertIn(expected, event["description"])
+
+    def test_ids_differ_per_kind_and_source_but_are_stable(self):
+        self.assertNotEqual(build_event(weight_record())["id"], build_event(pressure_record())["id"])
+        self.assertEqual(build_event(weight_record())["id"], build_event(weight_record())["id"])
+
+    def test_default_kinds_include_measurements(self):
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CALENDAR_KINDS", None)
+            sink = GoogleCalendarSink(calendar_id="cal1", session=FakeSession([]))
+        self.assertEqual(sink.kinds, {"activity", "sleep", "weight", "blood_pressure", "daily"})
+
+    def test_sink_writes_measurements(self):
+        sink = GoogleCalendarSink(kinds=("weight", "blood_pressure"), calendar_id="cal1",
+                                  session=FakeSession([Resp(200), Resp(200)]))
+        self.assertEqual(sink.write([weight_record(), pressure_record(), daily_record()]), 2)
+
+
 class NormalizeSleepTest(unittest.TestCase):
     def test_flattens_dto(self):
         sleep = {"dailySleepDTO": {
