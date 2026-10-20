@@ -3,7 +3,7 @@
 Sync and export health and fitness data between services: Garmin Connect as the primary store, Google Drive/Sheets,
 a Xiaomi Mi Body Composition Scale 2 (Bluetooth), and markdown digests that a personal assistant / RAG can read.
 Early-stage and opinionated: it is built for one household first, with connectors kept separate so more can be added.
-Design notes: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). License: Apache-2.0 (keep the NOTICE when you copy or fork).
+Design notes: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); plan to turn it into a product: [docs/PRODUCT.md](docs/PRODUCT.md). License: Apache-2.0 (keep the NOTICE when you copy or fork).
 
 ## Pipelines
 
