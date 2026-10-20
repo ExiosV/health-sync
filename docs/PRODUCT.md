@@ -160,3 +160,66 @@ setups, optional team/coach plan. Do not sell data; say so on the pricing page.
 - Which destination first for non-Google users: Markdown/Git, Notion, or Obsidian?
 - Pricing and who the first 10 beta users are (households of existing users first).
 - Whether to split the repository (engine vs hosted control plane) before phase 2.
+
+## 12. Target onboarding: a new user in under three minutes
+
+Principle: every step the user does is a click or a consent screen; everything else (folders, sheets, calendar, schedules,
+time zones, backfill) is created by the service with sane defaults.
+
+| # | What the user does | What the service does |
+|---|---|---|
+| 1 | Opens the site, clicks **Connect** | creates an account from the Google sign-in (no password) |
+| 2 | Approves Google access (narrow scopes, one screen) | creates a "Health Sync" folder, a sheet and, if chosen, a dedicated calendar *or* picks an existing one |
+| 3 | Connects Garmin (see below) | stores only tokens (encrypted), starts a backfill of the last 30 days, then history in the background |
+| 4 | Picks a **preset**: "Sheets + monthly digest", "Calendar diary", "Notes for my AI assistant", or any mix | fills the pipeline definition, schedule and time zone (taken from the data), no settings screens |
+| 5 | Done: sees the first rows/events within minutes | e-mail/Telegram confirmation, a status page, "reconnect" only when something breaks |
+
+**Connecting Garmin with the least effort** (best first):
+
+1. **Official OAuth** (one click, needs the Garmin partner programme; apply early).
+2. **Browser connector** (a small extension for Chrome/Edge/Yandex/Firefox): most people are already signed in to Garmin
+   Connect in their browser; the extension performs the one-time ticket exchange locally and hands the service a token. No
+   password, no MFA code typing, no cloud-IP blocks. This is what we do by hand today.
+3. **Password + MFA** (fallback; the login runs in the user's own agent or short-lived isolated worker, never stored).
+4. **File import** (Garmin export / FIT) for people who do not want any live connection.
+
+**Other devices**: a Bluetooth scale is the hardest case. Options: Web Bluetooth page ("stand on the scale with this tab
+open", Chrome only), a tiny desktop/Raspberry Pi agent with a QR-code pairing, or an Android companion; later vendor clouds
+(Withings, Xiaomi via Zepp export) with plain OAuth.
+
+**Zero-config defaults**: time zone from the data, destination names from a template in the user's language, safe
+backfill pacing, private visibility for calendar events, one-click "pause" and "delete all my data".
+
+**Households**: invite a second person by link; the scale logic separates people by weight, each person connects their own
+Garmin and destinations, nobody sees another's data.
+
+**What we deliberately do not build first**: a dashboard, coaching, social features, our own mobile app.
+
+## 13. Demand validation before building the platform
+
+Goal: learn within 4-6 weeks whether enough people want this enough to connect their accounts and pay. Cheap steps first.
+
+1. **Landing page + waitlist** (private repo `health-sync-web`, hosted on Cloudflare Pages): one clear promise, three
+   destinations (Sheets, Calendar, assistant digests), privacy answers, an early-access form with two optional questions
+   (which devices, where the data should go) and consent. Two or three headline variants (data ownership / AI assistant /
+   "stop re-typing your workouts") tested by splitting traffic; no tracking cookies, privacy-friendly counters only.
+2. **Fake-door pricing**: the pricing section records which plan a visitor clicks (free / personal / family) so willingness
+   to pay is measured before billing exists.
+3. **Where to find the audience**: Garmin and quantified-self communities (Reddit r/Garmin, r/QuantifiedSelf, r/selfhosted,
+   Garmin forums), Telegram chats about running/cycling/biohacking, Habr/VC articles (a how-it-works post with the
+   open-source repo), Hacker News "Show HN" for the open-source core, Product Hunt "ask" later.
+4. **Concierge pilot**: onboard 5-10 interested people by hand on the existing self-hosted deployment (separate namespaces,
+   their own Google projects or our verified app in test mode). Record every step that needed help: that list is the
+   onboarding backlog. Charge nothing, ask for 15 minutes of feedback each.
+5. **Metrics and gates**
+   - Visit -> signup >= 4% on targeted traffic; >= 100 signups in six weeks; >= 30% answer the optional questions.
+   - >= 10 pilot users still syncing after 30 days; >= 5 say they would pay a stated price (5-9 EUR/month personal, a family tier).
+   - Support load per pilot user under 1 hour per month after the first week.
+   - If signups are fine but nobody completes a pilot, the problem is onboarding (fix section 12); if signups are low, the
+     promise or the channel is wrong (change positioning before building).
+6. **Kill/pivot criteria**: fewer than 30 signups after two channels and two headline variants, or Garmin access proves
+   impossible at the quality needed (then pivot to a self-host-first open-source tool with paid support and the hosted
+   service only for non-Garmin sources).
+
+Decisions that follow from the gates: build the control plane and the browser connector (phase 2), apply for the Garmin
+programme in parallel, and publish the open-source core announcement together with the first public beta.
