@@ -54,6 +54,34 @@ def normalize_sleep(sleep: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def normalize_naps(sleep: dict[str, Any]) -> list[dict[str, Any]]:
+    """Naps of one night's `get_sleep_data` response, in local wall time.
+
+    Garmin puts them in `dailySleepDTO.dailyNapDTOS` with GMT timestamps plus a minute offset
+    that can differ from the night's (travel/DST), so each nap carries its own offset.
+    """
+    dto = _get(sleep, "dailySleepDTO", default={}) or {}
+    naps = []
+    for nap in dto.get("dailyNapDTOS") or []:
+        start, end = nap.get("napStartTimestampGMT"), nap.get("napEndTimestampGMT")
+        if not start or not end:
+            continue
+        offset = timedelta(minutes=int(nap.get("napStartTimeOffset") or 0))
+        begin = _parse_gmt(start) + offset
+        finish = _parse_gmt(end) + offset
+        naps.append({
+            "start": begin.strftime("%Y-%m-%d %H:%M:%S"),
+            "end": finish.strftime("%Y-%m-%d %H:%M:%S"),
+            "duration_min": round(nap.get("napTimeSec", 0) / 60) if _num(nap.get("napTimeSec")) else "",
+            "feedback": nap.get("napFeedback") or "",
+        })
+    return naps
+
+
+def _parse_gmt(value: str) -> datetime:
+    return datetime.fromisoformat(str(value).replace("Z", "")[:19])
+
+
 def normalize_daily(raw: dict[str, Any]) -> dict[str, Any]:
     u, sleep, hrv = raw.get("user_summary") or {}, raw.get("sleep") or {}, raw.get("hrv") or {}
     ready = raw.get("readiness") or {}
@@ -82,6 +110,7 @@ def normalize_daily(raw: dict[str, Any]) -> dict[str, Any]:
         "sleep_awake_h": _hours(dto.get("awakeSleepSeconds")),
         "sleep_start": _local_hhmm(dto.get("sleepStartTimestampLocal")),
         "sleep_end": _local_hhmm(dto.get("sleepEndTimestampLocal")),
+        "nap_total_h": _hours(dto.get("napTimeSeconds")),
         "spo2_avg": _get(dto, "averageSpO2Value"),
         "spo2_low": _get(dto, "lowestSpO2Value"),
         "respiration_avg": _get(dto, "averageRespirationValue"),
@@ -137,6 +166,8 @@ class GarminHealthSource(GarminSource):
         sleep = normalize_sleep(raw.get("sleep") or {})
         if sleep["start"]:
             yield Record("sleep", self.name, d, sleep["start"], sleep, raw.get("sleep") or {})
+        for i, nap in enumerate(normalize_naps(raw.get("sleep") or {})):
+            yield Record("nap", self.name, f"{d}:{nap['start']}", nap["start"], nap, nap)
         yield from self._measurements(raw, d)
 
     def _measurements(self, raw: dict[str, Any], d: str) -> Iterable[Record]:

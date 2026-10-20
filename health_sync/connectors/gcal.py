@@ -58,7 +58,7 @@ def _pace(minutes_per_km: float) -> str:
     return f"{total // 60}:{total % 60:02d}"
 
 
-def _activity_description(p: dict[str, Any]) -> str:
+def _activity_description(p: dict[str, Any], url: str = "") -> str:
     lines = []
     if p.get("type"):
         lines.append(f"Тип: {p['type']}")
@@ -76,6 +76,25 @@ def _activity_description(p: dict[str, Any]) -> str:
         lines.append(f"Калории: {p['calories']}")
     if p.get("te_aerobic") or p.get("te_anaerobic"):
         lines.append(f"Training Effect: {p.get('te_aerobic')} / {p.get('te_anaerobic')} {p.get('te_label', '')}".rstrip())
+    if url:
+        lines.append(f"Garmin: {url}")
+    return "\n".join(lines)
+
+
+NAP_FEEDBACK = {
+    "LONG_DURATION_LOW_NEED": "долгий сон при низкой потребности",
+    "LONG_DURATION_HIGH_NEED": "долгий сон при высокой потребности",
+    "OPTIMAL": "оптимально",
+    "SHORT_DURATION": "короткий сон",
+}
+
+
+def _nap_description(p: dict[str, Any]) -> str:
+    lines = []
+    if p.get("duration_min") not in ("", None):
+        lines.append(f"Длительность: {p['duration_min']} мин")
+    if p.get("feedback"):
+        lines.append(f"Оценка Garmin: {NAP_FEEDBACK.get(p['feedback'], p['feedback'])}")
     return "\n".join(lines)
 
 
@@ -150,6 +169,8 @@ def _daily_description(p: dict[str, Any]) -> str:
         if p.get("sleep_score") not in ("", None):
             sleep += f", оценка {p['sleep_score']}"
         lines.append(f"Сон: {sleep}")
+    if p.get("nap_total_h") not in ("", None):
+        lines.append(f"Дневной сон: {p['nap_total_h']} ч")
     if p.get("hrv_last_night") not in ("", None):
         hrv = f"{p['hrv_last_night']}"
         if p.get("hrv_status"):
@@ -255,6 +276,16 @@ def build_event(record: Record, *, timezone: str | None = None, prefix: str = ""
         start, end = _timed(start_dt, start_dt + timedelta(minutes=point_minutes), timezone)
         return _event(record, summary, description, start, end, **common)
 
+    if record.kind == "nap":
+        start_dt = _parse_dt(p.get("start") or record.start)
+        end_dt = _parse_dt(p.get("end"))
+        if start_dt and not end_dt and p.get("duration_min"):
+            end_dt = start_dt + timedelta(minutes=float(p["duration_min"]))
+        if not start_dt or not end_dt or end_dt <= start_dt:
+            return None
+        start, end = _timed(start_dt, end_dt, timezone)
+        return _event(record, "Дневной сон", _nap_description(p), start, end, **common)
+
     if record.kind == "sleep":
         start_dt = _parse_dt(p.get("start") or record.start)
         end_dt = _parse_dt(p.get("end"))
@@ -273,11 +304,12 @@ def build_event(record: Record, *, timezone: str | None = None, prefix: str = ""
         return None
     start, end = _timed(start_dt, end_dt, timezone)
     return _event(record, p.get("name") or p.get("type") or "Активность",
-                  _activity_description(p), start, end, **common)
+                  _activity_description(p, f"https://connect.garmin.com/modern/activity/{record.external_id}"),
+                  start, end, **common)
 
 
 def _env_kinds() -> set[str]:
-    default = "activity,sleep,weight,blood_pressure,daily"
+    default = "activity,sleep,nap,weight,blood_pressure,daily"
     return {k.strip() for k in os.getenv("CALENDAR_KINDS", default).split(",") if k.strip()}
 
 
