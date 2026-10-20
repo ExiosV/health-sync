@@ -28,13 +28,16 @@ class GarminCalendarSource(GarminHealthSource):
     days_env = "GARMIN_CALENDAR_DAYS"
 
     def fetch(self, since: str | None = None) -> Iterable[Record]:
-        yield from self._activities(self._cutoff(since))
+        yield from self._activities(self._cutoff(since), with_zones=False)
         yield from super().fetch(since)
         yield from self._today_measurements()
 
-    def _cutoff(self, since: str | None) -> str:
-        """First-run window for activities, so a fresh install does not import the whole history."""
-        return since or (date.today() - timedelta(days=int(os.getenv(self.days_env, self.default_days)))).isoformat()
+    def _cutoff(self, since: str | None) -> str | None:
+        """First-run window for activities; `GARMIN_CALENDAR_ACTIVITY_DAYS=0` imports the history."""
+        if since:
+            return since
+        days = int(os.getenv("GARMIN_CALENDAR_ACTIVITY_DAYS", os.getenv(self.days_env, self.default_days)))
+        return (date.today() - timedelta(days=days)).isoformat() if days > 0 else None
 
     def _today_measurements(self) -> Iterable[Record]:
         """Weigh-ins and pressure readings of the unfinished day, so they appear the same day."""

@@ -49,7 +49,8 @@ class GarminSource:
 
     def __init__(self, token_dir: str | None = None, activity_limit: int | None = None):
         self.token_dir = str(Path(token_dir or os.getenv("GARMINTOKENS", "~/.garminconnect")).expanduser())
-        self.activity_limit = activity_limit or int(os.getenv("GARMIN_ACTIVITY_LIMIT", "100"))
+        self.activity_limit = (activity_limit if activity_limit is not None
+                               else int(os.getenv("GARMIN_ACTIVITY_LIMIT", "100")))
         self._api = None
 
     def _client(self):
@@ -68,15 +69,16 @@ class GarminSource:
     def fetch(self, since: str | None = None) -> Iterable[Record]:
         yield from self._activities(since)
 
-    def _activities(self, since: str | None) -> Iterable[Record]:
+    def _activities(self, since: str | None, with_zones: bool = True) -> Iterable[Record]:
         api = self._client()
         for a in self._pages(api, since):
             start = a["startTimeLocal"]
-            try:
-                zones = api.get_activity_hr_in_timezones(a["activityId"])
-            except Exception as exc:  # zones are optional
-                log.warning("no HR zones for %s: %s", a["activityId"], exc)
-                zones = {}
+            zones = {}
+            if with_zones:
+                try:
+                    zones = api.get_activity_hr_in_timezones(a["activityId"])
+                except Exception as exc:  # zones are optional
+                    log.warning("no HR zones for %s: %s", a["activityId"], exc)
             yield Record(
                 kind="activity",
                 source=self.name,
@@ -88,15 +90,19 @@ class GarminSource:
 
 
     def _pages(self, api, since: str | None) -> Iterable[dict]:
-        """Newest-first activities, paged; stops at `since` or after activity_limit items."""
-        for offset in range(0, self.activity_limit, self.PAGE):
-            page = api.get_activities(offset, min(self.PAGE, self.activity_limit - offset))
+        """Newest-first activities, paged; stops at `since` or after activity_limit items (0 = all)."""
+        limit = self.activity_limit
+        offset = 0
+        while limit <= 0 or offset < limit:
+            size = self.PAGE if limit <= 0 else min(self.PAGE, limit - offset)
+            page = api.get_activities(offset, size)
             for a in page:
                 if since and a["startTimeLocal"] <= since:
                     return
                 yield a
-            if len(page) < self.PAGE:
+            if len(page) < size:
                 return
+            offset += len(page)
 
 
 def _normalize_activity(a: dict, zones: dict) -> dict:
