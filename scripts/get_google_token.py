@@ -1,12 +1,13 @@
-"""One-off, stdlib only: get a Google refresh token (Drive + Sheets) and store it in the health-sync secret file
-on the machine where this runs ($HEALTH_SYNC_ENV, default ~/.config/health-sync/secrets.env), without printing it.
+"""One-off, stdlib only: get a Google refresh token (Drive + Sheets + Calendar) and store it in the health-sync
+secret file on the machine where this runs ($HEALTH_SYNC_ENV, default ~/.config/health-sync/secrets.env), without
+printing it.
 
   python3 get_google_token.py url                 prints the consent URL (sign in as the Drive owner and allow)
   python3 get_google_token.py exchange '<URL>'    <URL> = the address the browser ends up on after consent
                                                   (http://127.0.0.1:1/?code=... fails to load; that is expected)
 
 GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must already be in the env file. The OAuth project needs the Google
-Drive API and Google Sheets API enabled.
+Drive API, Google Sheets API and Google Calendar API enabled.
 """
 import json
 import os
@@ -15,7 +16,8 @@ import urllib.parse
 import urllib.request
 
 ENV_FILE = os.path.expanduser(os.environ.get("HEALTH_SYNC_ENV", "~/.config/health-sync/secrets.env"))
-SCOPES = "https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets"
+SCOPES = ("https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets "
+          "https://www.googleapis.com/auth/calendar")
 REDIRECT = "http://127.0.0.1:1/"
 
 
