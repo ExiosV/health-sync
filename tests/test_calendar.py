@@ -2,6 +2,7 @@ import unittest
 from datetime import datetime, timezone
 
 from health_sync.connectors.garmin_calendar import normalize_sleep
+from health_sync.connectors.garmin_health import normalize_naps
 from health_sync.connectors.gcal import GoogleCalendarSink, build_event, event_id
 from health_sync.core.model import Record
 
@@ -77,6 +78,7 @@ class BuildEventTest(unittest.TestCase):
         self.assertEqual(event["start"]["dateTime"], "2026-10-17T07:00:00")
         self.assertEqual(event["end"]["dateTime"], "2026-10-17T07:50:00")
         self.assertIn("running", event["description"])
+        self.assertIn("https://connect.garmin.com/modern/activity/12345", event["description"])
 
     def test_timezone_and_flags_applied(self):
         event = build_event(activity_record(), timezone="Europe/Moscow", visibility="private",
@@ -155,12 +157,48 @@ class MeasurementsTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("CALENDAR_KINDS", None)
             sink = GoogleCalendarSink(calendar_id="cal1", session=FakeSession([]))
-        self.assertEqual(sink.kinds, {"activity", "sleep", "weight", "blood_pressure", "daily"})
+        self.assertEqual(sink.kinds, {"activity", "sleep", "nap", "weight", "blood_pressure", "daily"})
 
     def test_sink_writes_measurements(self):
         sink = GoogleCalendarSink(kinds=("weight", "blood_pressure"), calendar_id="cal1",
                                   session=FakeSession([Resp(200), Resp(200)]))
         self.assertEqual(sink.write([weight_record(), pressure_record(), daily_record()]), 2)
+
+
+def nap_record(start="2026-10-11 15:35:42", end="2026-10-11 16:35:42"):
+    payload = {"start": start, "end": end, "duration_min": 60,
+               "feedback": "LONG_DURATION_LOW_NEED"}
+    return Record("nap", "garmin", f"2026-10-11:{start}", start, payload)
+
+
+class NapTest(unittest.TestCase):
+    def test_nap_is_a_timed_event(self):
+        event = build_event(nap_record(), prefix="Garmin: ")
+        self.assertEqual(event["summary"], "Garmin: Дневной сон")
+        self.assertEqual(event["start"]["dateTime"], "2026-10-11T15:35:42")
+        self.assertEqual(event["end"]["dateTime"], "2026-10-11T16:35:42")
+        self.assertEqual(event["extendedProperties"]["private"]["healthSyncKind"], "nap")
+        self.assertIn("60 мин", event["description"])
+        self.assertIn("низкой потребности", event["description"])
+
+    def test_nap_falls_back_to_duration(self):
+        event = build_event(Record("nap", "garmin", "n1", "2026-10-11 15:35:00",
+                                   {"duration_min": 30}))
+        self.assertEqual(event["end"]["dateTime"], "2026-10-11T16:05:00")
+
+    def test_normalize_naps_applies_its_own_offset(self):
+        sleep = {"dailySleepDTO": {"napTimeSeconds": 3600, "dailyNapDTOS": [{
+            "napStartTimestampGMT": "2026-10-11T12:35:42",
+            "napEndTimestampGMT": "2026-10-11T13:35:42",
+            "napTimeSec": 3600, "napStartTimeOffset": 180,
+            "napFeedback": "LONG_DURATION_LOW_NEED"}]}}
+        naps = normalize_naps(sleep)
+        self.assertEqual(len(naps), 1)
+        self.assertEqual((naps[0]["start"], naps[0]["end"]), ("2026-10-11 15:35:42", "2026-10-11 16:35:42"))
+        self.assertEqual(naps[0]["duration_min"], 60)
+
+    def test_nap_list_missing(self):
+        self.assertEqual(normalize_naps({"dailySleepDTO": {}}), [])
 
 
 class CalendarCursorTest(unittest.TestCase):
@@ -185,7 +223,10 @@ class CalendarCursorTest(unittest.TestCase):
         source = GarminCalendarSource()
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("GARMIN_CALENDAR_DAYS", None)
+            os.environ.pop("GARMIN_CALENDAR_ACTIVITY_DAYS", None)
             self.assertEqual(source._cutoff(None), (date.today() - timedelta(days=7)).isoformat())
+        with mock.patch.dict(os.environ, {"GARMIN_CALENDAR_ACTIVITY_DAYS": "0"}):
+            self.assertIsNone(source._cutoff(None))  # the whole activity history
         self.assertEqual(source._cutoff("2026-01-01"), "2026-01-01")
 
 
