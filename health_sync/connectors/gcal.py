@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import time
 from datetime import datetime, timedelta
 from typing import Any, Iterable
 from urllib.parse import quote
@@ -346,6 +347,8 @@ class GoogleCalendarSink:
         self.visibility = "private" if os.getenv("CALENDAR_PRIVATE", "true").lower() in ("1", "true", "yes") else None
         self.transparency = os.getenv("CALENDAR_TRANSPARENCY", "transparent") or None
         self.point_minutes = int(os.getenv("CALENDAR_POINT_MINUTES", "10"))
+        self.write_delay = float(os.getenv("CALENDAR_WRITE_DELAY", "0.5"))
+        self.retries = int(os.getenv("CALENDAR_WRITE_RETRIES", "6"))
         self._s = session
         self._calendar: str | None = None
 
@@ -372,16 +375,39 @@ class GoogleCalendarSink:
             self._calendar = "primary"
         return self._calendar
 
-    def _upsert(self, calendar: str, event: dict[str, Any]) -> None:
+    @staticmethod
+    def _throttled(r: Any) -> bool:
+        """Google answers a burst of writes with 403 rateLimitExceeded, not 429."""
+        if r.status_code == 429 or r.status_code >= 500:
+            return True
+        if r.status_code == 403:
+            text = (getattr(r, "text", "") or "").lower()
+            return "ratelimit" in text or "quota" in text
+        return False
+
+    def _send(self, method: str, url: str, **kw: Any) -> Any:
+        """One Calendar write, retried with backoff while Google is throttling or erroring."""
         s = self._session()
+        call = getattr(s, method)
+        for attempt in range(self.retries):
+            r = call(url, **kw)
+            if not self._throttled(r) or attempt == self.retries - 1:
+                return r
+            delay = float(getattr(r, "headers", {}).get("Retry-After", 0) or 0) or min(60, 2 ** attempt)
+            log.warning("calendar write throttled (%d), retrying in %.0fs", r.status_code, delay)
+            time.sleep(delay)
+        return r  # pragma: no cover - the loop always returns
+
+    def _upsert(self, calendar: str, event: dict[str, Any]) -> None:
         url = f"{API}/calendars/{quote(calendar, safe='')}/events"
-        r = s.post(url, json=event, params={"sendUpdates": "none"})
+        params = {"sendUpdates": "none"}
+        r = self._send("post", url, json=event, params=params)
         if r.status_code == 409:  # deterministic id already exists -> update in place
             body = {k: v for k, v in event.items() if k != "id"}
             # A deleted event keeps a `cancelled` tombstone under the same id and rejects a plain
             # PATCH with 403, so ask explicitly to bring it back to `confirmed` in the same request.
             body["status"] = "confirmed"
-            r = s.patch(f"{url}/{event['id']}", json=body, params={"sendUpdates": "none"})
+            r = self._send("patch", f"{url}/{event['id']}", json=body, params=params)
         if r.status_code >= 400:
             log.error("%s -> %d %s", url, r.status_code, (getattr(r, "text", "") or "")[:300])
         r.raise_for_status()
@@ -394,7 +420,9 @@ class GoogleCalendarSink:
         if not events:
             return 0
         calendar = self.calendar()
-        for event in events:
+        for i, event in enumerate(events):
+            if i and self.write_delay > 0:  # a backfill of hundreds of events must not trip the quota
+                time.sleep(self.write_delay)
             self._upsert(calendar, event)
         log.info("%s: %d events in %s", self.name, len(events), calendar)
         return len(events)

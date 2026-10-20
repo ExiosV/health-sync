@@ -8,13 +8,12 @@ from health_sync.core.model import Record
 
 
 class Resp:
-    def __init__(self, status_code=200, payload=None):
-        self.status_code, self._payload = status_code, payload or {}
+    def __init__(self, status_code=200, payload=None, text=""):
+        self.status_code, self._payload, self.text = status_code, payload or {}, text
+        self.headers = {}
 
     def json(self):
         return self._payload
-
-    text = ""
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -214,8 +213,28 @@ class UpsertTest(unittest.TestCase):
         self.assertNotIn("id", kw["json"])
         self.assertEqual(kw["json"]["status"], "confirmed")  # revives a cancelled tombstone
 
+    def test_throttled_write_is_retried(self):
+        from unittest import mock
+
+        throttled = Resp(403, text='{"error": {"errors": [{"reason": "rateLimitExceeded"}]}}')
+        session = FakeSession([throttled, Resp(200)])
+        sink = GoogleCalendarSink(kinds=("sleep",), calendar_id="cal1", session=session)
+        with mock.patch("health_sync.connectors.gcal.time.sleep") as slept:
+            self.assertEqual(sink.write([sleep_record()]), 1)
+        self.assertEqual(len(session.calls), 2)
+        self.assertTrue(slept.called)
+
+    def test_pacing_between_events(self):
+        from unittest import mock
+
+        session = FakeSession([Resp(200), Resp(200)])
+        sink = GoogleCalendarSink(kinds=("sleep",), calendar_id="cal1", session=session)
+        with mock.patch("health_sync.connectors.gcal.time.sleep") as slept:
+            self.assertEqual(sink.write([sleep_record(), sleep_record()]), 2)
+        slept.assert_called_once_with(sink.write_delay)  # only between writes, not before the first
+
     def test_insert_failure_is_raised(self):
-        session = FakeSession([Resp(500)])
+        session = FakeSession([Resp(400, text="bad body")])  # 4xx that is not throttling
         sink = GoogleCalendarSink(kinds=("sleep",), calendar_id="cal1", session=session)
         with self.assertRaises(RuntimeError):
             sink.write([sleep_record()])

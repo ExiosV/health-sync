@@ -42,6 +42,9 @@ short timed events (`CALENDAR_POINT_MINUTES`, 10 by default) or all-day when Gar
 all-day event per day with HRV, body battery, stress, readiness, SpO2, respiration and steps.
 The first run backfills `GARMIN_CALENDAR_DAYS` of sleep/daily and `GARMIN_CALENDAR_ACTIVITY_DAYS` of activities;
 set the latter to `0` (and `GARMIN_ACTIVITY_LIMIT=0`) to import the whole activity history.
+Writes are paced (`CALENDAR_WRITE_DELAY`, 0.5 s) and retried on Google's `403 rateLimitExceeded` with exponential
+backoff (`CALENDAR_WRITE_RETRIES`); an event that was deleted keeps a cancelled tombstone under its id, and the upsert
+revives it with `status=confirmed` instead of failing.
 Each event gets a deterministic id from the source record, so re-runs update it in place instead of duplicating.
 Enable the Google Calendar API in the OAuth project and re-issue the refresh token (`scripts/get_google_token.py`) after
 this change: it now also needs the Calendar scope.
