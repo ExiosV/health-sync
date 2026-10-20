@@ -378,7 +378,12 @@ class GoogleCalendarSink:
         r = s.post(url, json=event, params={"sendUpdates": "none"})
         if r.status_code == 409:  # deterministic id already exists -> update in place
             body = {k: v for k, v in event.items() if k != "id"}
+            # A deleted event keeps a `cancelled` tombstone under the same id and rejects a plain
+            # PATCH with 403, so ask explicitly to bring it back to `confirmed` in the same request.
+            body["status"] = "confirmed"
             r = s.patch(f"{url}/{event['id']}", json=body, params={"sendUpdates": "none"})
+        if r.status_code >= 400:
+            log.error("%s -> %d %s", url, r.status_code, (getattr(r, "text", "") or "")[:300])
         r.raise_for_status()
 
     def write(self, records: Iterable[Record]) -> int:
