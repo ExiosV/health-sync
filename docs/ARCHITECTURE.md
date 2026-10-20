@@ -28,7 +28,7 @@ store. Designed so it can later become a product for other users.
 ```
 src/
   core/        model, state, pipeline runner, config
-  connectors/  garmin/, xiaomi_scale/, gsheets/, gdrive/, workflowy/, rag/
+  connectors/  garmin/, xiaomi_scale/, gsheets/, gcal/, gdrive/, workflowy/, rag/
   cli.py
 docs/
 ```
@@ -62,7 +62,13 @@ Existing `src/sync_stats.py` (activities -> Google Sheet) becomes
 3. Mi Scale 2 -> Garmin (BLE reader + ingest, people told apart by weight): done; syncing the second person's
    measurements to their own Garmin account: planned.
 4. RAG: the monthly digests are plain markdown in Drive and are picked up by the assistant's indexer: done.
-5. Next: more sources (other scales, blood-pressure monitors), YAML pipelines, per-user configuration for a hosted service.
+5. Garmin health data -> Google Calendar (`garmin-to-calendar`): done. Activities and sleep are timed events; weight
+   and blood-pressure measurements are short timed events (all-day when Garmin only gives a date); `daily` adds one
+   all-day summary per day (HRV, body battery, stress, readiness, SpO2, respiration, steps). The calendar is addressed
+   by id or by name (`GOOGLE_CALENDAR_NAME`, e.g. "Дневник") so one code base serves any user; events carry a
+   deterministic id (upsert, no duplicates) and a `healthSync*` tag. Needs the Calendar OAuth scope and the Calendar
+   API enabled in the project.
+6. Next: more sources (other scales, blood-pressure monitors), YAML pipelines, per-user configuration for a hosted service.
 
 ## Open points
 

@@ -9,6 +9,7 @@ from google.oauth2.credentials import Credentials
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/calendar",
 ]
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 

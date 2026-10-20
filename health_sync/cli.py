@@ -10,7 +10,9 @@ from dotenv import load_dotenv
 from health_sync.connectors.drive_digest import DriveDigestSink
 from health_sync.connectors.drive_raw import DriveRawSink
 from health_sync.connectors.garmin import GarminSource
+from health_sync.connectors.garmin_calendar import GarminCalendarSource
 from health_sync.connectors.garmin_health import GarminHealthSource
+from health_sync.connectors.gcal import GoogleCalendarSink
 from health_sync.connectors.gsheets import SheetsSink
 from health_sync.core.state import State
 
@@ -24,6 +26,7 @@ PIPELINES = {
         DriveRawSink(os.environ["HEALTH_RAW_FOLDER_ID"]),
         DriveDigestSink(os.environ["HEALTH_DIGEST_FOLDER_ID"], os.environ["HEALTH_SPREADSHEET_ID"]),  # last: reads the sheets
     ]),
+    "garmin-to-calendar": lambda: (GarminCalendarSource(), [GoogleCalendarSink()]),
 }
 
 
@@ -51,6 +54,7 @@ def main() -> None:
     sub.add_parser("scale-ingest", help="serve the endpoint that receives Mi Scale measurements and uploads them to Garmin")
     ls = sub.add_parser("drive-ls", help="list sub-folders of a Drive folder path")
     ls.add_argument("--path", default="")
+    sub.add_parser("calendar-ls", help="list the account's calendars (id + name) to pick GOOGLE_CALENDAR_ID/NAME")
     args = parser.parse_args()
     if args.cmd == "scale-ingest":
         from health_sync.scale.ingest import serve
@@ -72,6 +76,11 @@ def main() -> None:
                 parent = drive.list(parent, FOLDER, part)[0]["id"]
             for f in drive.list(parent):
                 print(("[dir] " if f["mimeType"] == FOLDER else "      ") + f["name"])
+        return
+    if args.cmd == "calendar-ls":
+        from health_sync.connectors.gcal import list_calendars
+        for c in list_calendars():
+            print(f"{'[primary] ' if c.get('primary') else '          '}{c.get('summary', '')}\t{c.get('id', '')}")
         return
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     run(args.pipeline, args.state)
