@@ -75,12 +75,7 @@ Existing `src/sync_stats.py` (activities -> Google Sheet) becomes
 
 - Garmin login from a datacenter/home IP can be blocked (Cloudflare); the one-time ticket exchange is the workaround.
 - The Garmin API is unofficial and can change without notice.
-- Today's sleep, HRV and daily summary reach the calendar and sheets only on the next day (only finished days are
-  read); sleep is finished when the person wakes up, so it could be read the same morning.
-- `CALENDAR_TIMEZONE` is a fixed zone while Garmin gives local wall time of wherever the person is; across time zones
-  or DST changes the event instants drift (the displayed wall time stays the Garmin one).
 - Health data in a calendar is only as private as the calendar: keep it unshared (events are written `private`).
-- The shared `Credentials` now request the Calendar scope for every pipeline; a refresh token without it breaks all
-  of them, so rotate the token before deploying scope changes.
-- Small cleanups: unused loop variable in `GarminHealthSource._day`, the `event_id` docstring mixes two alphabets
-  (hex digits are valid Calendar id characters).
+- Only finished days feed the sheets and the daily calendar summary; today's sleep and naps go to the calendar the same
+  morning (the calendar job repeats every few hours, about 8 Garmin calls per run).
+- Garmin API calls are paced (0.3 s between calls) and light; a full backfill is the only heavy operation, run it once.

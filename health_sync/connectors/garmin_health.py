@@ -9,6 +9,7 @@ from typing import Any, Callable, Iterable
 
 from health_sync.connectors.garmin import GarminSource
 from health_sync.core.model import Record
+from health_sync.core.timeutil import offset_minutes
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ def normalize_sleep(sleep: dict[str, Any]) -> dict[str, Any]:
         "rem_h": _hours(dto.get("remSleepSeconds")),
         "awake_h": _hours(dto.get("awakeSleepSeconds")),
         "score": _get(dto, "sleepScores", "overall", "value"),
+        "utc_offset_min": offset_minutes(dto.get("sleepStartTimestampLocal"), dto.get("sleepStartTimestampGMT")),
     }
 
 
@@ -74,6 +76,7 @@ def normalize_naps(sleep: dict[str, Any]) -> list[dict[str, Any]]:
             "end": finish.strftime("%Y-%m-%d %H:%M:%S"),
             "duration_min": round(nap.get("napTimeSec", 0) / 60) if _num(nap.get("napTimeSec")) else "",
             "feedback": nap.get("napFeedback") or "",
+            "utc_offset_min": int(offset.total_seconds() // 60),
         })
     return naps
 
@@ -163,22 +166,28 @@ class GarminHealthSource(GarminSource):
                 log.warning("%s %s: %s", d, key, str(exc)[:100])
             time.sleep(0.3)
         yield Record("daily", self.name, d, d, normalize_daily(raw), raw)
-        sleep = normalize_sleep(raw.get("sleep") or {})
-        if sleep["start"]:
-            yield Record("sleep", self.name, d, sleep["start"], sleep, raw.get("sleep") or {})
-        for i, nap in enumerate(normalize_naps(raw.get("sleep") or {})):
-            yield Record("nap", self.name, f"{d}:{nap['start']}", nap["start"], nap, nap)
+        yield from self._sleep_records(raw.get("sleep") or {}, d)
         yield from self._measurements(raw, d)
+
+    def _sleep_records(self, sleep_raw: dict[str, Any], d: str) -> Iterable[Record]:
+        """The night's sleep (keyed by the wake-up date `d`) and the naps of that day."""
+        sleep = normalize_sleep(sleep_raw)
+        if sleep["start"]:
+            yield Record("sleep", self.name, d, sleep["start"], sleep, sleep_raw)
+        for nap in normalize_naps(sleep_raw):
+            yield Record("nap", self.name, f"{d}:{nap['start']}", nap["start"], nap, nap)
 
     def _measurements(self, raw: dict[str, Any], d: str) -> Iterable[Record]:
         for m in _get(raw.get("blood_pressure"), "bloodPressureMeasurements", default=[]):
             ts = m.get("measurementTimestampLocal") or d
             yield Record("blood_pressure", self.name, ts, ts[:19].replace("T", " "), {
                 "systolic": m.get("systolic", ""), "diastolic": m.get("diastolic", ""),
-                "pulse": m.get("pulse", ""), "category": m.get("categoryName", "")}, m)
+                "pulse": m.get("pulse", ""), "category": m.get("categoryName", ""),
+                "utc_offset_min": offset_minutes(m.get("measurementTimestampLocal"), m.get("measurementTimestampGMT"))}, m)
         for w in _get(raw.get("weigh_ins"), "dateWeightList", default=[]):
             ts = datetime.utcfromtimestamp(w["date"] / 1000).strftime("%Y-%m-%d %H:%M:%S") if w.get("date") else d
             yield Record("weight", self.name, str(w.get("samplePk", ts)), ts, {
                 "weight_kg": _kg(w.get("weight")), "bmi": w.get("bmi") or "", "body_fat_pct": w.get("bodyFat") or "",
                 "body_water_pct": w.get("bodyWater") or "", "muscle_mass_kg": _kg(w.get("muscleMass")),
-                "bone_mass_kg": _kg(w.get("boneMass"))}, w)
+                "bone_mass_kg": _kg(w.get("boneMass")),
+                "utc_offset_min": offset_minutes(w.get("date"), w.get("timestampGMT"))}, w)

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterable
 
 from health_sync.core.model import Record
+from health_sync.core.timeutil import offset_minutes
 
 log = logging.getLogger(__name__)
 
@@ -124,6 +125,8 @@ def _normalize_activity(a: dict, zones: dict) -> dict:
         "vo2max": a.get("vO2MaxValue") or a.get("vo2MaxValue") or 0,
         "calories": a.get("calories") or 0,
         "hr_zones": zones or {},
+        "utc_offset_min": offset_minutes(a.get("startTimeLocal"), a.get("startTimeGMT")),
+        "location": a.get("locationName") or "",
         "elevation_gain_m": round(a.get("elevationGain") or 0, 1),
         "elevation_loss_m": round(a.get("elevationLoss") or 0, 1),
     }

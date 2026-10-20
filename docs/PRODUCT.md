@@ -57,18 +57,26 @@ Connector contract stays the same (`Source.fetch(since)` -> `Record`), so a new 
 
 ## 5. Google access: verification and scopes
 
-Today's scopes (`drive`, `calendar`) are broad. Public Google apps requesting restricted scopes (`drive`) need a security
-assessment, which is expensive. Plan:
+Best practices we follow (and what changes for a product):
 
-- Use `drive.file` (only files the app creates or the user picks via Google Picker) or the app-data folder instead of full
-  `drive`; keep a "bring your own folder" option through Picker.
-- Use `calendar.events` + `calendar.calendarlist.readonly` (or a dedicated calendar created by the app) instead of
-  `calendar`.
-- Sheets: `drive.file` covers spreadsheets the app creates.
-- Publish the OAuth consent screen with a real domain, privacy policy and terms; complete Google verification
-  (sensitive scopes only) before inviting people outside a test group.
-- Offer non-Google destinations early (Markdown/Obsidian over WebDAV or Git, Notion, Telegram digest, CSV download), so
-  the product does not depend on one vendor's policy.
+- **Least privilege, one token per feature.** Already done: `GOOGLE_REFRESH_TOKEN` (Drive + Sheets) and
+  `GOOGLE_CALENDAR_REFRESH_TOKEN` (Calendar) are separate grants, so a revoked or narrower grant breaks one feature, not all.
+- **Do not request scopes when refreshing.** The access token then matches exactly what the user granted; a token that
+  lacks a newer scope fails only the call that needs it. Request scopes only at consent time, and use incremental
+  authorization (`include_granted_scopes`) when a feature is turned on later.
+- **Narrowest scope that works.** Calendar: `calendar.events` (read/write events) + `calendar.calendarlist.readonly` (find a
+  calendar by name) instead of full `calendar`; for a calendar created by the app itself, `calendar.app.created` is even
+  narrower. Sheets: the Drive scope also covers the Sheets API, so no separate `spreadsheets` grant.
+- **Drive**: `drive` is a restricted scope (a third-party security assessment is required for public apps). For a product use
+  `drive.file` (only files the app creates, or the user picks through Google Picker) or the app-data folder; the personal
+  instance keeps `drive` only because it writes into folders the owner created by hand.
+- **Verification**: publish the consent screen with a real domain, privacy policy and terms; complete Google verification
+  (sensitive scopes) before inviting people outside a test group; keep the app in production status (testing-mode refresh
+  tokens expire after 7 days).
+- **Other destinations early** (Markdown/Obsidian over Git or WebDAV, Notion, Telegram digest, CSV download), so the product
+  does not depend on one vendor's policy.
+- **Operational**: store refresh tokens encrypted, rotate on suspicion, log which scopes each token has (the token response
+  lists them), and surface "reconnect Google" in the UI when a refresh fails.
 
 ## 6. Privacy, security, legal
 

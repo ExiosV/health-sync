@@ -202,6 +202,78 @@ class NapTest(unittest.TestCase):
         self.assertEqual(normalize_naps({"dailySleepDTO": {}}), [])
 
 
+class OffsetTest(unittest.TestCase):
+    def test_timed_event_with_offset_is_exact_and_ignores_the_configured_zone(self):
+        rec = activity_record()
+        rec.payload["utc_offset_min"] = 120  # e.g. Cyprus in winter
+        event = build_event(rec, timezone="Europe/Moscow")
+        self.assertEqual(event["start"], {"dateTime": "2026-10-17T07:00:00+02:00"})
+        self.assertEqual(event["end"], {"dateTime": "2026-10-17T07:50:00+02:00"})
+
+    def test_negative_and_half_hour_offsets(self):
+        from health_sync.core.timeutil import format_offset
+        self.assertEqual(format_offset(-300), "-05:00")
+        self.assertEqual(format_offset(330), "+05:30")
+        self.assertEqual(format_offset(0), "+00:00")
+
+    def test_sleep_nap_weight_pressure_use_their_offset(self):
+        sleep = sleep_record()
+        sleep.payload["utc_offset_min"] = 180
+        self.assertTrue(build_event(sleep)["start"]["dateTime"].endswith("+03:00"))
+        w = Record("weight", "garmin", "1", "2026-10-17 10:00:00", {"weight_kg": 80, "utc_offset_min": 120})
+        self.assertEqual(build_event(w)["start"]["dateTime"], "2026-10-17T10:00:00+02:00")
+        bp = Record("blood_pressure", "garmin", "t", "2026-10-17 10:00:00",
+                    {"systolic": 120, "diastolic": 80, "utc_offset_min": -60})
+        self.assertEqual(build_event(bp)["end"]["dateTime"], "2026-10-17T10:10:00-01:00")
+
+    def test_no_offset_falls_back_to_the_zone(self):
+        event = build_event(activity_record(), timezone="Europe/Moscow")
+        self.assertEqual(event["start"], {"dateTime": "2026-10-17T07:00:00", "timeZone": "Europe/Moscow"})
+
+    def test_activity_location_in_description(self):
+        rec = activity_record()
+        rec.payload["location"] = "Limassol"
+        self.assertIn("Место: Limassol", build_event(rec)["description"])
+
+    def test_offset_derived_from_local_and_gmt(self):
+        from health_sync.core.timeutil import offset_minutes
+        self.assertEqual(offset_minutes("2026-10-18 15:54:12", "2026-10-18 12:54:12"), 180)
+        self.assertEqual(offset_minutes(1792373839000, 1792363039000), 180)
+        self.assertEqual(offset_minutes("2026-10-19T09:22:02.0", "2026-10-19T06:22:02.0"), 180)
+        self.assertEqual(offset_minutes("2026-01-05 08:00:00", "2026-01-05 06:00:00"), 120)  # winter vs summer differ
+        self.assertIsNone(offset_minutes("", "2026-10-18 12:54:12"))
+        self.assertIsNone(offset_minutes("2026-10-18 15:54:12", "2026-10-17 12:54:12"))  # not a zone offset
+
+
+class TodaySleepTest(unittest.TestCase):
+    def _source(self, sleep):
+        from health_sync.connectors.garmin_calendar import GarminCalendarSource
+
+        class Api:
+            def get_sleep_data(self, d):
+                return sleep
+
+        src = GarminCalendarSource()
+        src._api = Api()
+        return src
+
+    def test_finished_sleep_is_read_the_same_morning(self):
+        import time
+        now = int(time.time() * 1000)
+        dto = {"sleepStartTimestampLocal": now - 8 * 3600_000, "sleepEndTimestampLocal": now - 1000,
+               "sleepStartTimestampGMT": now - 8 * 3600_000 - 7200_000, "sleepEndTimestampGMT": now - 1000 - 7200_000,
+               "sleepTimeSeconds": 28000}
+        records = list(self._source({"dailySleepDTO": dto})._today_sleep())
+        self.assertEqual([r.kind for r in records], ["sleep"])
+        self.assertEqual(records[0].payload["utc_offset_min"], 120)
+
+    def test_unfinished_or_missing_sleep_is_skipped(self):
+        import time
+        future = int(time.time() * 1000) + 3600_000
+        self.assertEqual(list(self._source({"dailySleepDTO": {"sleepEndTimestampGMT": future}})._today_sleep()), [])
+        self.assertEqual(list(self._source({})._today_sleep()), [])
+
+
 class UpsertTest(unittest.TestCase):
     def test_existing_id_is_patched_and_resurrected(self):
         session = FakeSession([Resp(409), Resp(200)])
