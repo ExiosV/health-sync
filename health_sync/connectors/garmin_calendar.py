@@ -7,6 +7,7 @@ gets activities plus the point-in-time measurements and one all-day summary per 
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import date, timedelta
 from typing import Any, Callable, Iterable
@@ -27,9 +28,13 @@ class GarminCalendarSource(GarminHealthSource):
     days_env = "GARMIN_CALENDAR_DAYS"
 
     def fetch(self, since: str | None = None) -> Iterable[Record]:
-        yield from self._activities(since)
+        yield from self._activities(self._cutoff(since))
         yield from super().fetch(since)
         yield from self._today_measurements()
+
+    def _cutoff(self, since: str | None) -> str:
+        """First-run window for activities, so a fresh install does not import the whole history."""
+        return since or (date.today() - timedelta(days=int(os.getenv(self.days_env, self.default_days)))).isoformat()
 
     def _today_measurements(self) -> Iterable[Record]:
         """Weigh-ins and pressure readings of the unfinished day, so they appear the same day."""

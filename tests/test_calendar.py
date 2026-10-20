@@ -175,6 +175,19 @@ class CalendarCursorTest(unittest.TestCase):
         self.assertEqual(source.cursor(f"{today} 08:15:00"), yesterday)
         self.assertEqual(source.cursor("2026-01-01"), "2026-01-01")
 
+    def test_first_run_window_limits_activities(self):
+        import os
+        from datetime import date, timedelta
+        from unittest import mock
+
+        from health_sync.connectors.garmin_calendar import GarminCalendarSource
+
+        source = GarminCalendarSource()
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GARMIN_CALENDAR_DAYS", None)
+            self.assertEqual(source._cutoff(None), (date.today() - timedelta(days=7)).isoformat())
+        self.assertEqual(source._cutoff("2026-01-01"), "2026-01-01")
+
 
 class NormalizeSleepTest(unittest.TestCase):
     def test_flattens_dto(self):
