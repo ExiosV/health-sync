@@ -14,6 +14,8 @@ class Resp:
     def json(self):
         return self._payload
 
+    text = ""
+
     def raise_for_status(self):
         if self.status_code >= 400:
             raise RuntimeError(f"HTTP {self.status_code}")
@@ -199,6 +201,24 @@ class NapTest(unittest.TestCase):
 
     def test_nap_list_missing(self):
         self.assertEqual(normalize_naps({"dailySleepDTO": {}}), [])
+
+
+class UpsertTest(unittest.TestCase):
+    def test_existing_id_is_patched_and_resurrected(self):
+        session = FakeSession([Resp(409), Resp(200)])
+        sink = GoogleCalendarSink(kinds=("sleep",), calendar_id="cal1", session=session)
+        self.assertEqual(sink.write([sleep_record()]), 1)
+        method, url, kw = session.calls[1]
+        self.assertEqual(method, "PATCH")
+        self.assertTrue(url.endswith("/events/" + event_id("garmin", "sleep", "2026-10-16")))
+        self.assertNotIn("id", kw["json"])
+        self.assertEqual(kw["json"]["status"], "confirmed")  # revives a cancelled tombstone
+
+    def test_insert_failure_is_raised(self):
+        session = FakeSession([Resp(500)])
+        sink = GoogleCalendarSink(kinds=("sleep",), calendar_id="cal1", session=session)
+        with self.assertRaises(RuntimeError):
+            sink.write([sleep_record()])
 
 
 class CalendarCursorTest(unittest.TestCase):
