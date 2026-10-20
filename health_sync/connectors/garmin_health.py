@@ -137,6 +137,9 @@ class GarminHealthSource(GarminSource):
         sleep = normalize_sleep(raw.get("sleep") or {})
         if sleep["start"]:
             yield Record("sleep", self.name, d, sleep["start"], sleep, raw.get("sleep") or {})
+        yield from self._measurements(raw, d)
+
+    def _measurements(self, raw: dict[str, Any], d: str) -> Iterable[Record]:
         for m in _get(raw.get("blood_pressure"), "bloodPressureMeasurements", default=[]):
             ts = m.get("measurementTimestampLocal") or d
             yield Record("blood_pressure", self.name, ts, ts[:19].replace("T", " "), {

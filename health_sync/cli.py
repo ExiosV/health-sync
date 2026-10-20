@@ -37,7 +37,9 @@ def run(name: str, state_path: str) -> None:
     for sink in sinks:
         sink.write(records)
     if records:
-        state.set(name, records[0].start)
+        newest = records[0].start
+        cursor = getattr(source, "cursor", None)
+        state.set(name, cursor(newest) if cursor else newest)
 
 
 def main() -> None:
