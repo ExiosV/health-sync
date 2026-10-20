@@ -1,13 +1,18 @@
-"""One-off, stdlib only: get a Google refresh token (Drive + Sheets + Calendar) and store it in the health-sync
-secret file on the machine where this runs ($HEALTH_SYNC_ENV, default ~/.config/health-sync/secrets.env), without
-printing it.
+"""One-off, stdlib only: get a Google refresh token and store it in the health-sync secret file on the machine where
+this runs ($HEALTH_SYNC_ENV, default ~/.config/health-sync/secrets.env), without printing it.
 
-  python3 get_google_token.py url                 prints the consent URL (sign in as the Drive owner and allow)
-  python3 get_google_token.py exchange '<URL>'    <URL> = the address the browser ends up on after consent
-                                                  (http://127.0.0.1:1/?code=... fails to load; that is expected)
+Least privilege: one token per feature.
+  drive      GOOGLE_REFRESH_TOKEN           scope: drive (Drive + Sheets)
+  calendar   GOOGLE_CALENDAR_REFRESH_TOKEN  scopes: calendar.events + calendar.calendarlist.readonly
+  all        GOOGLE_REFRESH_TOKEN           all of the above in one token (legacy, broader than needed)
 
-GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must already be in the env file. The OAuth project needs the Google
-Drive API, Google Sheets API and Google Calendar API enabled.
+  python3 get_google_token.py url [drive|calendar|all]               prints the consent URL (default: drive)
+  python3 get_google_token.py exchange '<URL>' [drive|calendar|all]  <URL> = the address the browser ends up on after
+                                                                     consent (http://127.0.0.1:1/?code=... fails to
+                                                                     load; that is expected)
+
+GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must already be in the env file. The OAuth project needs the Google Drive,
+Google Sheets and Google Calendar APIs enabled.
 """
 import json
 import os
@@ -16,8 +21,12 @@ import urllib.parse
 import urllib.request
 
 ENV_FILE = os.path.expanduser(os.environ.get("HEALTH_SYNC_ENV", "~/.config/health-sync/secrets.env"))
-SCOPES = ("https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets "
-          "https://www.googleapis.com/auth/calendar")
+G = "https://www.googleapis.com/auth/"
+SETS = {
+    "drive": ([G + "drive"], "GOOGLE_REFRESH_TOKEN"),
+    "calendar": ([G + "calendar.events", G + "calendar.calendarlist.readonly"], "GOOGLE_CALENDAR_REFRESH_TOKEN"),
+    "all": ([G + "drive", G + "calendar.events", G + "calendar.calendarlist.readonly"], "GOOGLE_REFRESH_TOKEN"),
+}
 REDIRECT = "http://127.0.0.1:1/"
 
 
@@ -34,13 +43,22 @@ def write_env(key: str, value: str) -> None:
     os.chmod(ENV_FILE, 0o600)
 
 
+def feature(argv: list, index: int) -> str:
+    name = argv[index] if len(argv) > index else "drive"
+    if name not in SETS:
+        sys.exit(f"unknown feature {name!r}; use one of {', '.join(SETS)}")
+    return name
+
+
 env = read_env()
 cmd = sys.argv[1] if len(sys.argv) > 1 else ""
 if cmd == "url":
+    scopes, _ = SETS[feature(sys.argv, 2)]
     print("https://accounts.google.com/o/oauth2/auth?" + urllib.parse.urlencode({
         "client_id": env["GOOGLE_CLIENT_ID"], "redirect_uri": REDIRECT, "response_type": "code",
-        "scope": SCOPES, "access_type": "offline", "prompt": "consent"}))
-elif cmd == "exchange" and len(sys.argv) == 3:
+        "scope": " ".join(scopes), "access_type": "offline", "prompt": "consent"}))
+elif cmd == "exchange" and len(sys.argv) >= 3:
+    scopes, key = SETS[feature(sys.argv, 3)]
     code = urllib.parse.parse_qs(urllib.parse.urlparse(sys.argv[2]).query)["code"][0]
     data = urllib.parse.urlencode({
         "code": code, "client_id": env["GOOGLE_CLIENT_ID"], "client_secret": env["GOOGLE_CLIENT_SECRET"],
@@ -48,7 +66,11 @@ elif cmd == "exchange" and len(sys.argv) == 3:
     tok = json.load(urllib.request.urlopen("https://oauth2.googleapis.com/token", data))
     if "refresh_token" not in tok:
         sys.exit("no refresh token returned")
-    write_env("GOOGLE_REFRESH_TOKEN", tok["refresh_token"])
-    print("stored GOOGLE_REFRESH_TOKEN; granted scopes:", tok.get("scope"))
+    granted = set(tok.get("scope", "").split())
+    missing = [s for s in scopes if s not in granted]
+    if missing:
+        sys.exit("consent did not grant: " + ", ".join(missing))
+    write_env(key, tok["refresh_token"])
+    print(f"stored {key}; granted scopes:", tok.get("scope"))
 else:
     sys.exit(__doc__)

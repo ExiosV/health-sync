@@ -23,11 +23,15 @@ python -m health_sync run garmin-to-calendar            # activities, sleep, nap
 python -m health_sync calendar-ls                        # list calendars (id + name) to configure the target
 python -m health_sync drive-ls --path "<Drive folder path>"
 python -m health_sync init-sheet --path "<Drive folder path>" --name "<file name>"   # prints the spreadsheet id
-python3 scripts/get_google_token.py url|exchange     # one-off, stdlib only: Google refresh token (Drive + Sheets)
+python3 scripts/get_google_token.py url|exchange [drive|calendar]   # one-off, stdlib only: Google refresh token
 ```
 
-Google access is a user OAuth refresh token (`GOOGLE_CLIENT_ID/SECRET/REFRESH_TOKEN`, scopes Drive + Sheets + Calendar);
-a service account works as a fallback. Garmin tokens are kept in `GARMINTOKENS`. If direct Garmin login is blocked
+Google access is a user OAuth refresh token (`GOOGLE_CLIENT_ID/SECRET/REFRESH_TOKEN`). Least privilege: one token per
+feature - `GOOGLE_REFRESH_TOKEN` with the `drive` scope (Drive + Sheets) and, optionally, `GOOGLE_CALENDAR_REFRESH_TOKEN`
+with `calendar.events` + `calendar.calendarlist.readonly` (no full `calendar` scope). Without the second token the first
+one is used for the calendar too (it must then carry the calendar scopes). Tokens are refreshed without asking for scopes,
+so a token missing a newer scope only fails the feature that needs it. Get a token with
+`python3 scripts/get_google_token.py url|exchange [drive|calendar|all]`. A service account works as a fallback. Garmin tokens are kept in `GARMINTOKENS`. If direct Garmin login is blocked
 (Cloudflare 429/403), `python -m health_sync garmin-ticket-login` exchanges a one-time SSO ticket from an already
 signed-in browser (`GARMIN_TICKET`) for saved tokens. Garmin access uses the unofficial `garminconnect` library and can
 break when Garmin changes its API.
@@ -46,8 +50,13 @@ Writes are paced (`CALENDAR_WRITE_DELAY`, 0.5 s) and retried on Google's `403 ra
 backoff (`CALENDAR_WRITE_RETRIES`); an event that was deleted keeps a cancelled tombstone under its id, and the upsert
 revives it with `status=confirmed` instead of failing.
 Each event gets a deterministic id from the source record, so re-runs update it in place instead of duplicating.
-Enable the Google Calendar API in the OAuth project and re-issue the refresh token (`scripts/get_google_token.py`) after
-this change: it now also needs the Calendar scope.
+Enable the Google Calendar API in the OAuth project and issue the calendar token (`get_google_token.py ... calendar`).
+
+Time zones: Garmin gives both local wall time and GMT for activities, sleep, naps, weigh-ins and pressure readings, so
+every timed event is written with the exact UTC offset of the place where it happened (RFC 3339, e.g. `+02:00`). Travel
+and DST changes need no configuration and the calendar shows the right local time in any viewer's zone.
+`CALENDAR_TIMEZONE` is only the fallback for a record without an offset. Sleep and naps are read the same morning, as soon
+as the watch has synced the night (the run repeats every few hours); the rest of the day is read once it is over.
 
 Typical deployment is a container (see `Dockerfile`) with two CronJobs and one small Deployment; the image entrypoint is
 `python -m health_sync`.
