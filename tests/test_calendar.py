@@ -163,6 +163,19 @@ class MeasurementsTest(unittest.TestCase):
         self.assertEqual(sink.write([weight_record(), pressure_record(), daily_record()]), 2)
 
 
+class CalendarCursorTest(unittest.TestCase):
+    def test_cursor_never_moves_inside_today(self):
+        from datetime import date, timedelta
+
+        from health_sync.connectors.garmin_calendar import GarminCalendarSource
+
+        source = GarminCalendarSource()
+        today = date.today().isoformat()
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        self.assertEqual(source.cursor(f"{today} 08:15:00"), yesterday)
+        self.assertEqual(source.cursor("2026-01-01"), "2026-01-01")
+
+
 class NormalizeSleepTest(unittest.TestCase):
     def test_flattens_dto(self):
         sleep = {"dailySleepDTO": {
