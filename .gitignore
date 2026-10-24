@@ -137,3 +137,12 @@ service_account.json
 .last_sync_timestamp
 garmin_sync.log
 .DS_Store
+.env.local
+*.pem
+*.key
+*.pyc
+.venv/
+Thumbs.db
+*.tmp
+*.bak
+node_modules/
