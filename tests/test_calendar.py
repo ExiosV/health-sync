@@ -1,41 +1,32 @@
 import unittest
 from datetime import datetime, timezone
 
+from google_kit import GoogleError
+
 from health_sync.connectors.garmin_calendar import normalize_sleep
 from health_sync.connectors.garmin_health import normalize_naps
 from health_sync.connectors.gcal import GoogleCalendarSink, build_event, event_id
 from health_sync.core.model import Record
 
 
-class Resp:
-    def __init__(self, status_code=200, payload=None, text=""):
-        self.status_code, self._payload, self.text = status_code, payload or {}, text
-        self.headers = {}
+class FakeCalendar:
+    """Stand-in for google_kit.Calendar: records writes and raises queued errors."""
 
-    def json(self):
-        return self._payload
+    def __init__(self, calendars=None, errors=None):
+        self.calendars = calendars or []
+        self.errors = list(errors or [])
+        self.calls = []
 
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise RuntimeError(f"HTTP {self.status_code}")
+    def list_calendars(self):
+        return self.calendars
 
-
-class FakeSession:
-    def __init__(self, responses):
-        self.responses, self.calls = list(responses), []
-
-    def _call(self, method, url, **kw):
-        self.calls.append((method, url, kw))
-        return self.responses.pop(0)
-
-    def get(self, url, **kw):
-        return self._call("GET", url, **kw)
-
-    def post(self, url, **kw):
-        return self._call("POST", url, **kw)
-
-    def patch(self, url, **kw):
-        return self._call("PATCH", url, **kw)
+    def upsert_event(self, calendar_id, event, *, send_updates="none"):
+        self.calls.append((calendar_id, event))
+        if self.errors:
+            error = self.errors.pop(0)
+            if error:
+                raise error
+        return {"id": event["id"]}
 
 
 def ms(dt):
@@ -157,12 +148,12 @@ class MeasurementsTest(unittest.TestCase):
         from unittest import mock
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("CALENDAR_KINDS", None)
-            sink = GoogleCalendarSink(calendar_id="cal1", session=FakeSession([]))
+            sink = GoogleCalendarSink(calendar_id="cal1", client=FakeCalendar())
         self.assertEqual(sink.kinds, {"activity", "sleep", "nap", "weight", "blood_pressure", "daily"})
 
     def test_sink_writes_measurements(self):
         sink = GoogleCalendarSink(kinds=("weight", "blood_pressure"), calendar_id="cal1",
-                                  session=FakeSession([Resp(200), Resp(200)]))
+                                  client=FakeCalendar())
         self.assertEqual(sink.write([weight_record(), pressure_record(), daily_record()]), 2)
 
 
@@ -275,39 +266,38 @@ class TodaySleepTest(unittest.TestCase):
 
 
 class UpsertTest(unittest.TestCase):
-    def test_existing_id_is_patched_and_resurrected(self):
-        session = FakeSession([Resp(409), Resp(200)])
-        sink = GoogleCalendarSink(kinds=("sleep",), calendar_id="cal1", session=session)
+    def test_event_is_upserted_under_its_deterministic_id(self):
+        calendar = FakeCalendar()
+        sink = GoogleCalendarSink(kinds=("sleep",), calendar_id="cal1", client=calendar)
         self.assertEqual(sink.write([sleep_record()]), 1)
-        method, url, kw = session.calls[1]
-        self.assertEqual(method, "PATCH")
-        self.assertTrue(url.endswith("/events/" + event_id("garmin", "sleep", "2026-10-16")))
-        self.assertNotIn("id", kw["json"])
-        self.assertEqual(kw["json"]["status"], "confirmed")  # revives a cancelled tombstone
+        calendar_id, event = calendar.calls[0]
+        self.assertEqual(calendar_id, "cal1")
+        self.assertEqual(event["id"], event_id("garmin", "sleep", "2026-10-16"))
 
     def test_throttled_write_is_retried(self):
         from unittest import mock
 
-        throttled = Resp(403, text='{"error": {"errors": [{"reason": "rateLimitExceeded"}]}}')
-        session = FakeSession([throttled, Resp(200)])
-        sink = GoogleCalendarSink(kinds=("sleep",), calendar_id="cal1", session=session)
+        throttled = GoogleError("HTTP 403", status=403,
+                                body='{"error": {"errors": [{"reason": "rateLimitExceeded"}]}}')
+        calendar = FakeCalendar(errors=[throttled])
+        sink = GoogleCalendarSink(kinds=("sleep",), calendar_id="cal1", client=calendar)
         with mock.patch("health_sync.connectors.gcal.time.sleep") as slept:
             self.assertEqual(sink.write([sleep_record()]), 1)
-        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(len(calendar.calls), 2)
         self.assertTrue(slept.called)
 
     def test_pacing_between_events(self):
         from unittest import mock
 
-        session = FakeSession([Resp(200), Resp(200)])
-        sink = GoogleCalendarSink(kinds=("sleep",), calendar_id="cal1", session=session)
+        calendar = FakeCalendar()
+        sink = GoogleCalendarSink(kinds=("sleep",), calendar_id="cal1", client=calendar)
         with mock.patch("health_sync.connectors.gcal.time.sleep") as slept:
             self.assertEqual(sink.write([sleep_record(), sleep_record()]), 2)
         slept.assert_called_once_with(sink.write_delay)  # only between writes, not before the first
 
     def test_insert_failure_is_raised(self):
-        session = FakeSession([Resp(400, text="bad body")])  # 4xx that is not throttling
-        sink = GoogleCalendarSink(kinds=("sleep",), calendar_id="cal1", session=session)
+        calendar = FakeCalendar(errors=[GoogleError("HTTP 400 bad body", status=400, body="bad body")])
+        sink = GoogleCalendarSink(kinds=("sleep",), calendar_id="cal1", client=calendar)
         with self.assertRaises(RuntimeError):
             sink.write([sleep_record()])
 
@@ -358,26 +348,16 @@ class NormalizeSleepTest(unittest.TestCase):
 
 class SinkTest(unittest.TestCase):
     def test_resolves_calendar_by_name_and_inserts(self):
-        session = FakeSession([Resp(200, {"items": [{"id": "diary@group.calendar.google.com", "summary": "Дневник"}]}),
-                               Resp(200)])
-        sink = GoogleCalendarSink(kinds=("sleep",), calendar_name="дневник", session=session)
+        calendar = FakeCalendar(calendars=[{"id": "diary@group.calendar.google.com", "summary": "Дневник"}])
+        sink = GoogleCalendarSink(kinds=("sleep",), calendar_name="дневник", client=calendar)
         self.assertEqual(sink.write([sleep_record()]), 1)
         self.assertEqual(sink.calendar(), "diary@group.calendar.google.com")
-        method, url, kw = session.calls[-1]
-        self.assertEqual(method, "POST")
-        self.assertIn("/calendars/diary%40group.calendar.google.com/events", url)
-        self.assertEqual(kw["json"]["id"], event_id("garmin", "sleep", "2026-10-16"))
-
-    def test_existing_event_is_updated_not_duplicated(self):
-        session = FakeSession([Resp(200, {"items": [{"id": "cal1", "summary": "Дневник"}]}),
-                               Resp(409), Resp(200)])
-        sink = GoogleCalendarSink(kinds=("sleep",), calendar_name="Дневник", session=session)
-        self.assertEqual(sink.write([sleep_record()]), 1)
-        self.assertEqual([c[0] for c in session.calls], ["GET", "POST", "PATCH"])
-        self.assertNotIn("id", session.calls[-1][2]["json"])
+        calendar_id, event = calendar.calls[-1]
+        self.assertEqual(calendar_id, "diary@group.calendar.google.com")
+        self.assertEqual(event["id"], event_id("garmin", "sleep", "2026-10-16"))
 
     def test_other_kinds_are_ignored(self):
-        sink = GoogleCalendarSink(kinds=("sleep",), calendar_id="cal1", session=FakeSession([]))
+        sink = GoogleCalendarSink(kinds=("sleep",), calendar_id="cal1", client=FakeCalendar())
         self.assertEqual(sink.write([activity_record()]), 0)
 
 
