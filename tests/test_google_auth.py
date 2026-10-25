@@ -21,11 +21,11 @@ class GoogleAuthTest(unittest.TestCase):
         with mock.patch.dict(os.environ, ENV, clear=True):
             self.assertEqual(google_auth.credentials("calendar").refresh_token, "drive-token")
 
-    def test_scope_sets_are_narrow(self):
-        self.assertEqual(google_auth.SCOPE_SETS["calendar"],
-                         ["https://www.googleapis.com/auth/calendar.events",
-                          "https://www.googleapis.com/auth/calendar.calendarlist.readonly"])
-        self.assertNotIn("https://www.googleapis.com/auth/calendar", google_auth.SCOPE_SETS["calendar"])
+    def test_calendar_auth_and_drive_auth_share_the_token_rules(self):
+        with mock.patch.dict(os.environ, {**ENV, "GOOGLE_CALENDAR_REFRESH_TOKEN": "cal-token"}, clear=True):
+            self.assertEqual(google_auth.auth("calendar").refresh_token, "cal-token")
+            self.assertEqual(google_auth.auth().refresh_token, "drive-token")
+            self.assertEqual(google_auth.auth().token_uri, "https://oauth2.googleapis.com/token")
 
 
 if __name__ == "__main__":

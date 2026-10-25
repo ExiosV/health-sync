@@ -20,17 +20,14 @@ import os
 import time
 from datetime import datetime, timedelta
 from typing import Any, Iterable
-from urllib.parse import quote
 
-from google.auth.transport.requests import AuthorizedSession
+from google_kit import Calendar, GoogleError
 
 from health_sync.connectors import google_auth
 from health_sync.core.model import Record
 from health_sync.core.timeutil import format_offset
 
 log = logging.getLogger(__name__)
-
-API = "https://www.googleapis.com/calendar/v3"
 
 
 def event_id(source: str, kind: str, external_id: str) -> str:
@@ -331,17 +328,13 @@ def _env_kinds() -> set[str]:
     return {k.strip() for k in os.getenv("CALENDAR_KINDS", default).split(",") if k.strip()}
 
 
-def _session() -> AuthorizedSession:
-    return AuthorizedSession(google_auth.credentials("calendar"))
+def _client() -> Calendar:
+    return Calendar(google_auth.auth("calendar"))
 
 
-def list_calendars(session: AuthorizedSession | None = None) -> list[dict[str, Any]]:
+def list_calendars(client: Calendar | None = None) -> list[dict[str, Any]]:
     """All calendars visible to the account (id, summary, timeZone) — used to find a name's id."""
-    s = session or _session()
-    r = s.get(f"{API}/users/me/calendarList",
-              params={"maxResults": 250, "fields": "items(id,summary,timeZone,primary)"})
-    r.raise_for_status()
-    return r.json().get("items", [])
+    return (client or _client()).list_calendars()
 
 
 class GoogleCalendarSink:
@@ -355,7 +348,7 @@ class GoogleCalendarSink:
     name = "gcal"
 
     def __init__(self, kinds: Iterable[str] | None = None, calendar_id: str | None = None,
-                 calendar_name: str | None = None, session: AuthorizedSession | None = None):
+                 calendar_name: str | None = None, client: Calendar | None = None):
         self.kinds = set(kinds) if kinds is not None else _env_kinds()
         self.calendar_id = calendar_id or os.getenv("GOOGLE_CALENDAR_ID") or ""
         self.calendar_name = calendar_name if calendar_name is not None else os.getenv("GOOGLE_CALENDAR_NAME", "")
@@ -366,13 +359,13 @@ class GoogleCalendarSink:
         self.point_minutes = int(os.getenv("CALENDAR_POINT_MINUTES", "10"))
         self.write_delay = float(os.getenv("CALENDAR_WRITE_DELAY", "0.5"))
         self.retries = int(os.getenv("CALENDAR_WRITE_RETRIES", "6"))
-        self._s = session
+        self._c = client
         self._calendar: str | None = None
 
-    def _session(self) -> AuthorizedSession:
-        if self._s is None:
-            self._s = _session()
-        return self._s
+    def _client(self) -> Calendar:
+        if self._c is None:
+            self._c = _client()
+        return self._c
 
     def calendar(self) -> str:
         """Resolve the target calendar id once (id -> name lookup -> 'primary')."""
@@ -382,7 +375,7 @@ class GoogleCalendarSink:
             self._calendar = self.calendar_id
         elif self.calendar_name:
             wanted = self.calendar_name.strip().casefold()
-            for c in list_calendars(self._session()):
+            for c in list_calendars(self._client()):
                 if str(c.get("summary", "")).strip().casefold() == wanted:
                     self._calendar = c["id"]
                     break
@@ -393,41 +386,30 @@ class GoogleCalendarSink:
         return self._calendar
 
     @staticmethod
-    def _throttled(r: Any) -> bool:
+    def _throttled(error: GoogleError) -> bool:
         """Google answers a burst of writes with 403 rateLimitExceeded, not 429."""
-        if r.status_code == 429 or r.status_code >= 500:
+        if error.status == 429 or (error.status or 0) >= 500:
             return True
-        if r.status_code == 403:
-            text = (getattr(r, "text", "") or "").lower()
+        if error.status == 403:
+            text = str(error.body or "").lower()
             return "ratelimit" in text or "quota" in text
         return False
 
-    def _send(self, method: str, url: str, **kw: Any) -> Any:
-        """One Calendar write, retried with backoff while Google is throttling or erroring."""
-        s = self._session()
-        call = getattr(s, method)
-        for attempt in range(self.retries):
-            r = call(url, **kw)
-            if not self._throttled(r) or attempt == self.retries - 1:
-                return r
-            delay = float(getattr(r, "headers", {}).get("Retry-After", 0) or 0) or min(60, 2 ** attempt)
-            log.warning("calendar write throttled (%d), retrying in %.0fs", r.status_code, delay)
-            time.sleep(delay)
-        return r  # pragma: no cover - the loop always returns
-
     def _upsert(self, calendar: str, event: dict[str, Any]) -> None:
-        url = f"{API}/calendars/{quote(calendar, safe='')}/events"
-        params = {"sendUpdates": "none"}
-        r = self._send("post", url, json=event, params=params)
-        if r.status_code == 409:  # deterministic id already exists -> update in place
-            body = {k: v for k, v in event.items() if k != "id"}
-            # A deleted event keeps a `cancelled` tombstone under the same id and rejects a plain
-            # PATCH with 403, so ask explicitly to bring it back to `confirmed` in the same request.
-            body["status"] = "confirmed"
-            r = self._send("patch", f"{url}/{event['id']}", json=body, params=params)
-        if r.status_code >= 400:
-            log.error("%s -> %d %s", url, r.status_code, (getattr(r, "text", "") or "")[:300])
-        r.raise_for_status()
+        """One Calendar upsert, retried with backoff while Google is throttling or erroring."""
+        client = self._client()
+        for attempt in range(self.retries):
+            try:
+                client.upsert_event(calendar, event)
+                return
+            except GoogleError as error:
+                if not self._throttled(error) or attempt == self.retries - 1:
+                    log.error("calendar event %s -> %s %s", event.get("id"), error.status,
+                              str(error.body or "")[:300])
+                    raise
+                delay = min(60, 2 ** attempt)
+                log.warning("calendar write throttled (%s), retrying in %.0fs", error.status, delay)
+                time.sleep(delay)
 
     def write(self, records: Iterable[Record]) -> int:
         events = [e for r in records if r.kind in self.kinds

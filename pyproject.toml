@@ -8,6 +8,7 @@ dependencies = [
     "garminconnect",
     "gspread",
     "google-auth",
+    "google-kit @ https://github.com/ExiosV/google-kit/archive/refs/tags/v0.1.0.tar.gz",
     "requests",
     "python-dotenv",
 ]

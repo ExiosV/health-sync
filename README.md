@@ -26,7 +26,11 @@ python -m health_sync init-sheet --path "<Drive folder path>" --name "<file name
 python3 scripts/get_google_token.py url|exchange [drive|calendar]   # one-off, stdlib only: Google refresh token
 ```
 
-Google access is a user OAuth refresh token (`GOOGLE_CLIENT_ID/SECRET/REFRESH_TOKEN`). Least privilege: one token per
+Google access is a user OAuth refresh token (`GOOGLE_CLIENT_ID/SECRET/REFRESH_TOKEN`). OAuth refresh, Drive and the
+Calendar REST calls come from the shared [google-kit](https://github.com/ExiosV/google-kit) library (Apache-2.0,
+pinned to `v0.1.0` and installed straight from its release tarball); health-sync keeps what the library does not cover:
+the `gspread` sheet writes, the service-account fallback, Calendar event construction and the write throttling.
+Least privilege: one token per
 feature - `GOOGLE_REFRESH_TOKEN` with the `drive` scope (Drive + Sheets) and, optionally, `GOOGLE_CALENDAR_REFRESH_TOKEN`
 with `calendar.events` + `calendar.calendarlist.readonly` (no full `calendar` scope). Without the second token the first
 one is used for the calendar too (it must then carry the calendar scopes). Tokens are refreshed without asking for scopes,

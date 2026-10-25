@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Callable, Iterable
 
 import gspread
+from google_kit import has_oauth
 
 from health_sync.connectors import google_auth
 from health_sync.core.model import Record
@@ -94,7 +95,7 @@ class SheetsSink:
         self.worksheet = worksheet
 
     def _open(self):
-        if google_auth.has_oauth():
+        if has_oauth():
             gc = gspread.authorize(google_auth.credentials())
         elif (info := google_auth.service_account_info()):
             gc = gspread.service_account_from_dict(info)
