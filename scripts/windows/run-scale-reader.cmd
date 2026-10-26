@@ -6,7 +6,7 @@ REM Passes --idle-exit 600 so the reader exits on a silent BLE stall (wrapper re
 
 setlocal
 
-set "INSTALL_DIR=C:\Tools\health-sync-scale"
+if not defined INSTALL_DIR set "INSTALL_DIR=C:\Tools\health-sync-scale"
 set "PYTHON=%INSTALL_DIR%\venv\Scripts\python.exe"
 set "READER=%INSTALL_DIR%\reader.py"
 set "LOG=%INSTALL_DIR%\reader.log"
@@ -17,18 +17,17 @@ set "TOKEN_FILE=%INSTALL_DIR%\token.txt"
 set "PENDING_FILE=%INSTALL_DIR%\pending.jsonl"
 set "IDLE_EXIT=600"
 
+:loop
 REM Rotate log if it exceeds 10 MB (10485760 bytes)
 if exist "%LOG%" (
-    for /f %%A in ("%LOG%") do if %%~zA GTR 10485760 (
+    for %%A in ("%LOG%") do if %%~zA GTR 10485760 (
         if exist "%LOG%.1" del /q "%LOG%.1"
         move /y "%LOG%" "%LOG%.1" >nul
     )
 )
-
-:loop
-echo [%date% %time%] Starting reader...
+echo [%date% %time%] starting reader >> "%LOG%"
 "%PYTHON%" "%READER%" --address "%ADDRESS%" --url "%URL%" --host "%HOST%" --token-file "%TOKEN_FILE%" --pending-file "%PENDING_FILE%" --idle-exit %IDLE_EXIT% >> "%LOG%" 2>&1
-set EXIT_CODE=%ERRORLEVEL%
-echo [%date% %time%] Reader exited with code %EXIT_CODE%. Restarting in 10 seconds...
-timeout /t 10 /nobreak >nul
+echo [%date% %time%] reader exited with code %ERRORLEVEL%, restarting in 10 s >> "%LOG%"
+REM ping, not timeout: timeout needs an interactive console and fails at once in a background task
+ping -n 11 127.0.0.1 >nul
 goto loop
