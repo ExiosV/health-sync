@@ -8,7 +8,14 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
-from health_sync.scale.reader import (
+try:  # bleak is only installed where the reader runs (Windows host); the tests replace the scanner anyway
+    import bleak  # noqa: F401
+except ImportError:
+    import sys
+    import types
+    sys.modules["bleak"] = types.SimpleNamespace(BleakScanner=None)
+
+from health_sync.scale.reader import (  # noqa: E402
     IDLE_EXIT_CODE, SETTLE_S, is_idle, load_pending, post, prune, run, save_pending_file,
 )
 
