@@ -75,6 +75,62 @@ Typical deployment is a container (see `Dockerfile`) with two CronJobs and one s
 This tool handles personal health data. Nothing is sent anywhere except your own Garmin and Google accounts.
 Do not commit `.env`, tokens or exported data.
 
+## Scale reader on Windows
+
+The BLE reader (`health_sync/scale/reader.py`) runs on the Windows host `devicex2` as a background
+task, independent of the owner's logon session.
+
+### What runs where
+
+- **Task name**: `health-sync-scale` (S4U, runs as `DEVICEX2\igorp` in session 0)
+- **Trigger**: `AtStartup` with a 1-minute delay (Bluetooth + network ready)
+- **Action**: `cmd.exe /c C:\Tools\health-sync-scale\run-scale-reader.cmd`
+- **Wrapper** (`run-scale-reader.cmd`): loops forever, restarts `reader.py` on any exit; rotates `reader.log`
+  when it exceeds 10 MB; passes `--idle-exit 600` so the reader exits with code 3 if no advertisement
+  arrives for 10 minutes (WinRT BLE watchers can stall silently).
+- **Files in `C:\Tools\health-sync-scale\`**: `reader.py`, `miscale.py`, `run-scale-reader.cmd`, `venv/`,
+  `token.txt`, `pending.jsonl`, `reader.log` (and `reader.log.1` after rotation).
+
+### Install / update
+
+```powershell
+# One-time install (needs an elevated PowerShell):
+.\scripts\windows\install-scale-reader-task.ps1 -Deploy -StartNow -SourceDir C:\path\to\health-sync
+
+# Later update of the reader code only:
+.\scripts\windows\install-scale-reader-task.ps1 -Deploy -StartNow -SourceDir C:\path\to\health-sync
+```
+
+### How to check
+
+```powershell
+# Task status
+Get-ScheduledTaskInfo -TaskName health-sync-scale
+
+# Process in session 0
+Get-CimInstance Win32_Process -Filter "Name like 'python%' AND CommandLine like '%reader.py%'" |
+  Select-Object ProcessId, SessionId, CommandLine
+```
+
+Expect `SessionId = 0`. `reader.log` grows in the install dir; each restart writes a timestamped
+"Starting reader..." line.
+
+### Undo
+
+```powershell
+# Find the latest backup XML in the install dir and re-register it:
+$bak = Get-ChildItem C:\Tools\health-sync-scale\health-sync-scale.bak-*.xml | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+Register-ScheduledTask -Xml (Get-Content $bak.FullName -Raw) -TaskName health-sync-scale -Force
+Start-ScheduledTask -TaskName health-sync-scale
+```
+
+Or simply unregister the task and fall back to the old interactive `run.cmd`:
+
+```powershell
+Unregister-ScheduledTask -TaskName health-sync-scale -Confirm:$false
+& C:\Tools\health-sync-scale\run.cmd
+```
+
 ## Licensing policy
 
 Only permissive dependencies (MIT/BSD/Apache) are used; GPL or unlicensed code is not copied.
