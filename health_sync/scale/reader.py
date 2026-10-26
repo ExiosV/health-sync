@@ -46,6 +46,43 @@ def is_idle(last_adv_time: float, now: float, idle_exit: int) -> bool:
     return (now - last_adv_time) > idle_exit
 
 
+def prune(best: dict, sent: set, now: float, max_age: float = 3600, max_sent: int = 500) -> None:
+    """Forget measurements first heard more than `max_age` s ago and keep only the newest `max_sent` keys
+    of `sent` (ISO strings sort chronologically)."""
+    cutoff = now - max_age
+    for key in [k for k, (t0, _) in best.items() if t0 < cutoff]:
+        del best[key]
+    if len(sent) > max_sent:
+        for key in sorted(sent)[:-max_sent]:
+            sent.discard(key)
+
+
+def load_pending(path: str) -> list[dict]:
+    """Read the pending queue; skip lines that do not parse (e.g. truncated by a power cut)."""
+    if not os.path.exists(path):
+        return []
+    out: list[dict] = []
+    with open(path, errors="replace") as f:  # a cut-off UTF-8 sequence must not raise here
+        for n, line in enumerate(f, 1):
+            if not line.strip():
+                continue
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                print(f"pending file {path}: skipping unparsable line {n}: {line.strip()[:80]!r}", flush=True)
+    return out
+
+
+def save_pending_file(path: str, pending: list[dict]) -> None:
+    """Write the pending queue atomically: temp file in the same directory, then os.replace."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.writelines(json.dumps(p) + "\n" for p in pending)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
 async def run(
     address: str,
     scan: int | None,
@@ -60,13 +97,12 @@ async def run(
     pending: list[dict] = []
     last_try = 0.0
     last_adv_time = time.time()  # last advertisement from ANY device, not just the scale
-    if pending_file and os.path.exists(pending_file):
-        pending = [json.loads(line) for line in open(pending_file) if line.strip()]
+    if pending_file:
+        pending = load_pending(pending_file)
 
     def save_pending() -> None:
         if pending_file:
-            with open(pending_file, "w") as f:
-                f.writelines(json.dumps(p) + "\n" for p in pending)
+            save_pending_file(pending_file, pending)
 
     def flush() -> None:
         for p in list(pending):
@@ -115,13 +151,7 @@ async def run(
             if url and pending and now - last_try >= 15:
                 last_try = now
                 flush()
-            # Forget measurements older than 1 h and cap `sent` (ISO strings sort chronologically).
-            cutoff = now - 3600
-            for key in [k for k, (t0, _) in best.items() if t0 < cutoff]:
-                del best[key]
-            if len(sent) > 500:
-                for key in sorted(sent)[:-500]:
-                    sent.discard(key)
+            prune(best, sent, now)
     return 0
 
 
