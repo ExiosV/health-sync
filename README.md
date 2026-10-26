@@ -75,6 +75,113 @@ Typical deployment is a container (see `Dockerfile`) with two CronJobs and one s
 This tool handles personal health data. Nothing is sent anywhere except your own Garmin and Google accounts.
 Do not commit `.env`, tokens or exported data.
 
+## Scale reader on Windows
+
+The BLE reader (`health_sync/scale/reader.py`) runs on the Windows host `devicex2` as a background
+task, independent of the owner's logon session.
+
+### What was kept and what changed (2026-10-26)
+
+Kept, because it works: the reader listens to passive BLE advertisements of the scale (no pairing,
+no connection); measurements go to a local queue `pending.jsonl` first and are uploaded from there,
+so nothing is lost while the server is down; duplicates are dropped on the server side.
+
+Changed:
+
+- **Idle-exit watchdog**: `reader.py --idle-exit 600` exits with code 3 when no advertisement from
+  any device arrives for 10 minutes (WinRT BLE watchers can stall silently); the wrapper restarts it.
+- **Background S4U task instead of a logon task with a window**: the old task `health-sync-scale` was
+  `Interactive` + `AtLogOn` and ran `run.cmd` in a visible cmd window that could be closed by accident
+  and did not run before logon. The new task runs in session 0 from boot. BLE from session 0 was
+  verified on devicex2 on 2026-10-26 (25 devices seen vs 27 in the interactive session).
+- **Recovery trigger**: besides `AtStartup` (+1 min) the task has a trigger that repeats every
+  5 minutes; with `MultipleInstances IgnoreNew` it does nothing while the wrapper runs and brings the
+  task back if the wrapper itself died.
+- **`ping` instead of `timeout`** in the wrapper: `timeout` needs an interactive console and fails at
+  once in a background task.
+- **Log rotation**: `reader.log` moves to `reader.log.1` when it exceeds 10 MB.
+- **Atomic queue**: `pending.jsonl` is written to a temp file and swapped in with `os.replace`;
+  unparsable lines (e.g. cut off by a power loss) are skipped with a log line instead of crashing.
+
+### What runs where
+
+- **Task name**: `health-sync-scale` (S4U, runs as `DEVICEX2\igorp` in session 0)
+- **Triggers**: `AtStartup` with a 1-minute delay, and every 5 minutes (recovery, see above)
+- **Action**: `cmd.exe /c C:\Tools\health-sync-scale\run-scale-reader.cmd`
+- **Wrapper** (`run-scale-reader.cmd`): loops forever, restarts `reader.py` on any exit, rotates the log,
+  passes `--idle-exit 600`.
+- **Files in `C:\Tools\health-sync-scale\`**: `reader.py`, `miscale.py`, `run-scale-reader.cmd`, `venv\`,
+  `token.txt`, `pending.jsonl`, `reader.log` (and `reader.log.1` after rotation), the old `run.cmd`,
+  backups `health-sync-scale.bak-<ts>.xml` and `<file>.bak-<ts>`.
+
+### Prerequisites
+
+- An **elevated** PowerShell (Run as administrator) on devicex2; Windows PowerShell 5.1 is enough.
+- A checkout of this repo on devicex2, passed as `-SourceDir` (the repo root).
+- `C:\Tools\health-sync-scale\venv` (with `bleak`) and `C:\Tools\health-sync-scale\token.txt` already
+  exist. The installer never creates or touches `venv`, `token.txt` or `pending.jsonl`.
+
+### Install / update
+
+```powershell
+# First install: stop the old run.cmd window, back up the old task and files, deploy, register, start.
+.\scripts\windows\install-scale-reader-task.ps1 -Deploy -SourceDir C:\path\to\health-sync
+
+# Update the reader code later (pull the repo first). Same command: re-running is safe, the task is
+# re-registered with the same definition and the ORIGINAL task backup (the Interactive one) is kept.
+.\scripts\windows\install-scale-reader-task.ps1 -Deploy -SourceDir C:\path\to\health-sync
+
+# Re-register the task only (files already in place), and start it:
+.\scripts\windows\install-scale-reader-task.ps1 -StartNow
+```
+
+`-Deploy` implies `-StartNow`. Order: back up the task (only if no Interactive backup exists yet) ->
+stop the task and every reader process -> back up `reader.py`, `miscale.py`, `run-scale-reader.cmd`,
+`run.cmd` as `<name>.bak-<ts>` -> copy -> register -> start -> wait up to 60 s for `python reader.py`
+in session 0. If any step fails, the script restores the `.bak` files of this run, re-registers the
+backup XML, starts it and prints `ROLLED BACK`. The script prints which backup is the original.
+
+### How to check
+
+```powershell
+# Task status (LastTaskResult 267009 = running)
+Get-ScheduledTaskInfo -TaskName health-sync-scale
+
+# python reader.py runs in session 0
+Get-CimInstance Win32_Process -Filter "Name like 'python%' AND CommandLine like '%reader.py%'" |
+  Select-Object ProcessId, SessionId, CommandLine
+
+# Recent log: the wrapper writes "starting reader" and "reader exited with code N" (3 = idle-exit)
+Get-Content C:\Tools\health-sync-scale\reader.log -Tail 20
+
+# No cmd/python window left in a user session (expect no output)
+Get-Process cmd, python -ErrorAction SilentlyContinue | Where-Object SessionId -ne 0
+```
+
+The last command lists every cmd/python in user sessions, including unrelated ones; check that none of
+them is `run.cmd` or `reader.py`.
+
+### Undo
+
+```powershell
+# 1. Stop the task and the session-0 reader
+Stop-ScheduledTask -TaskName health-sync-scale
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*health-sync-scale*' -and
+  ($_.CommandLine -like '*reader.py*' -or $_.CommandLine -like '*run-scale-reader.cmd*') } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+
+# 2. Restore the ORIGINAL task: the oldest backup, whose principal is Interactive. The cmd window comes
+#    back at the next logon (or start it now with Start-ScheduledTask).
+$bak = Get-ChildItem C:\Tools\health-sync-scale\health-sync-scale.bak-*.xml | Sort-Object Name |
+  Where-Object { (Get-Content $_.FullName -Raw) -match 'InteractiveToken' } | Select-Object -First 1
+Register-ScheduledTask -Xml (Get-Content $bak.FullName -Raw) -TaskName health-sync-scale -Force
+
+# 3. If needed, restore the old files, e.g.
+#    Copy-Item C:\Tools\health-sync-scale\reader.py.bak-<ts> C:\Tools\health-sync-scale\reader.py -Force
+#    (same for miscale.py; run.cmd is never overwritten). Keeping the new reader.py is also fine:
+#    it defaults to --idle-exit 600 and the old run.cmd loops (goto loop), so it restarts it.
+```
+
 ## Licensing policy
 
 Only permissive dependencies (MIT/BSD/Apache) are used; GPL or unlicensed code is not copied.
