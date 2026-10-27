@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Iterable
@@ -53,19 +54,27 @@ class GarminSource:
         self.activity_limit = (activity_limit if activity_limit is not None
                                else int(os.getenv("GARMIN_ACTIVITY_LIMIT", "100")))
         self._api = None
+        self._api_lock = threading.Lock()
 
     def _client(self):
-        if self._api is None:
-            from garminconnect import Garmin  # imported lazily: heavy, and not needed to import the module
+        if self._api is None:  # double-checked: the scale upload and the activities view share this client
+            with self._api_lock:
+                if self._api is None:
+                    from garminconnect import Garmin  # imported lazily: heavy, and not needed to import the module
 
-            api = Garmin(
-                email=os.getenv("GARMIN_EMAIL"),
-                password=os.getenv("GARMIN_PASSWORD"),
-                prompt_mfa=mfa_code,
-            )
-            api.login(self.token_dir)  # reuses saved tokens, saves new ones
-            self._api = api
+                    api = Garmin(
+                        email=os.getenv("GARMIN_EMAIL"),
+                        password=os.getenv("GARMIN_PASSWORD"),
+                        prompt_mfa=mfa_code,
+                    )
+                    api.login(self.token_dir)  # reuses saved tokens, saves new ones
+                    self._api = api
         return self._api
+
+    def reset_client(self) -> None:
+        """Forget the logged-in client so the next call logs in again (used after an auth-looking failure)."""
+        with self._api_lock:
+            self._api = None
 
     def fetch(self, since: str | None = None) -> Iterable[Record]:
         yield from self._activities(since)
