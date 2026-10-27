@@ -12,7 +12,7 @@ Design notes: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); plan to turn it into
 | `garmin-activities-to-sheet` | Garmin activities -> a Google Sheet (newest first) |
 | `garmin-health-to-drive` | daily summary (sleep, HRV, body battery, stress, readiness, steps...), blood pressure and weight tabs, raw JSON per day, and a monthly markdown digest in Drive |
 | `garmin-to-calendar` | Garmin activities (with a link to Garmin Connect), sleep and naps, weight and blood-pressure measurements, plus one all-day summary per day, as events in a Google Calendar (target calendar configurable, see below) |
-| `scale-ingest` | HTTP endpoint that receives scale measurements and uploads weight and estimated body fat to Garmin; people are told apart by weight (`SCALE_PERSONS`), only `SCALE_GARMIN_PERSONS` are uploaded, the rest are only saved |
+| `scale-ingest` | HTTP endpoint that receives scale measurements and uploads weight and estimated body fat to Garmin; people are told apart by weight (`SCALE_PERSONS`), only `SCALE_GARMIN_PERSONS` are uploaded, the rest are only saved; it also serves a read-only `GET /activities` (recent Garmin activities) for other in-cluster services |
 | `health_sync/scale/reader.py` | BLE reader for the scale; runs on any machine with Bluetooth and posts to the ingest endpoint |
 
 ```bash
@@ -64,6 +64,56 @@ as the watch has synced the night (the run repeats every few hours); the rest of
 
 Typical deployment is a container (see `Dockerfile`) with two CronJobs and one small Deployment; the image entrypoint is
 `python -m health_sync`.
+
+## Ingest server: scale measurements and activities
+
+The always-on `scale-ingest` Deployment listens on port 8080; inside the cluster it is
+`http://health-sync-ingest.health-sync.svc:8080`. Both data endpoints require `Authorization: Bearer <token>` with the
+same `SCALE_INGEST_TOKEN` — the existing Bitwarden key
+`health-sync__health-sync-secrets__SCALE_INGEST_TOKEN` (consumers must reference that key, not create a new secret).
+The server refuses to start when the token is empty.
+
+- `POST /scale` — receives scale measurements (see the `scale-ingest` pipeline above).
+- `GET /` — unauthenticated health check, `{"ok": true}`.
+- `GET /activities` — read-only view of recent Garmin activities, newest first, for other in-cluster services (for
+  example a bike livetrack waiting for a ride to finish). It writes nothing.
+
+### `GET /activities`
+
+| Parameter | Meaning |
+|---|---|
+| `since` | ISO-8601. Without an offset it is local wall time, compared with each activity's `start` (Garmin `startTimeLocal`). With `Z` or an offset (`+03:00`) it is an instant and is compared in UTC; URL-encode the literal `+` as `%2B`. An invalid value returns 400. |
+| `limit` | Maximum number of activities; default 10, clamped to 1..30. |
+
+Response:
+
+```json
+{"activities": [{
+  "activityId": 123456,
+  "type": "road_biking",
+  "start": "2026-10-27T08:00:00",
+  "start_gmt": "2026-10-27T05:00:00",
+  "duration_s": 3600,
+  "elapsed_s": 3700,
+  "distance_km": 25.0,
+  "utc_offset_min": 180,
+  "is_ride": true,
+  "end_local": "2026-10-27T09:01:40",
+  "end_gmt": "2026-10-27T06:01:40"
+}]}
+```
+
+`start`/`start_gmt` are Garmin's local and UTC start times; `duration_s` is the moving duration; `elapsed_s` (only when
+Garmin provides it) is the wall-clock duration; `utc_offset_min` is local minus UTC in minutes (`180` means `+03:00`);
+`is_ride` is true for cycling-type activities; `end_local`/`end_gmt` are the start plus `elapsed_s` (falling back to
+`duration_s`), so consumers need no arithmetic. `start_gmt`, `elapsed_s` and `end_gmt` are omitted when Garmin does not
+provide them.
+
+A successful Garmin response is cached in memory for 120 s and a failure for 30 s (answered as 503 with a generic
+message, never tokens or account details), so polling every 2 minutes does not hammer Garmin. The Garmin call is
+single-flight and re-logs in after an auth-looking failure.
+
+Deploy with `gh workflow run deploy-health-sync.yml -R ExiosV/exiosv-lab-infra`.
 
 ## Layout
 
