@@ -4,16 +4,25 @@ POST /scale  Authorization: Bearer $SCALE_INGEST_TOKEN
   {"timestamp": "<scale clock, used as dedup key>", "received_at": "<local ISO time>", "weight_kg": 80.0, "impedance": 480}
 Who is on the scale is decided by weight (see Persons); only the Garmin-enabled person is uploaded, others are saved. Body fat is estimated from impedance with the Garmin profile (height, birth date, sex). Without impedance (socks) only the
 weight is uploaded. Every accepted measurement is also appended to $DATA_DIR/scale-log.jsonl.
+
+GET /activities?since=<ISO-8601>&limit=<n>  Authorization: Bearer $SCALE_INGEST_TOKEN
+  Read-only view of recent Garmin activities (newest first, limit 10 by default, at most 30) for other in-cluster
+  services, e.g. the bike livetrack waiting for a ride to finish. The Garmin response is cached for 60 s. No sink or
+  state is written.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import threading
+import time
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
+from health_sync.connectors.garmin import GarminSource, _normalize_activity
 from health_sync.scale.miscale import body_fat_pct
 
 log = logging.getLogger(__name__)
@@ -125,12 +134,73 @@ class ScaleIngest:
         return {"status": "uploaded", "person": person, "weight_kg": weight, "fat_pct": fat}
 
 
-def serve(port: int = 8080) -> None:
-    from health_sync.connectors.garmin import GarminSource
+def authorized(headers, token: str) -> bool:
+    """Bearer check shared by POST /scale and GET /activities."""
+    return headers.get("Authorization") == f"Bearer {token}"
 
-    token = os.environ["SCALE_INGEST_TOKEN"]
-    ingest = ScaleIngest(lambda: GarminSource()._client())
 
+def _since_key(value: str) -> str:
+    """ISO-8601 -> 'YYYY-MM-DDTHH:MM:SS', comparable with Garmin's local start strings (the offset, if any, is local
+    wall time already, so it is dropped together with a trailing Z)."""
+    text = value.strip().replace(" ", "T")
+    if text.endswith("Z"):
+        text = text[:-1]
+    return text[:19] if len(text) >= 19 else text
+
+
+def _summary(a: dict) -> dict:
+    """One activity from the Garmin API in the small shape GET /activities returns."""
+    norm = _normalize_activity(a, {})
+    out = {
+        "activityId": a.get("activityId"),
+        "type": norm["type"],
+        "start": a.get("startTimeLocal"),
+    }
+    if a.get("startTimeGMT"):
+        out["start_gmt"] = a["startTimeGMT"]
+    out["duration_s"] = round(a.get("duration") or 0)
+    if a.get("elapsedDuration") is not None:
+        out["elapsed_s"] = round(a["elapsedDuration"])
+    out["distance_km"] = norm["distance_km"]
+    out["utc_offset_min"] = norm["utc_offset_min"]
+    return out
+
+
+class ActivitiesFeed:
+    """Read-only, 60 s-cached view of the newest Garmin activities for GET /activities.
+
+    Polling clients (every 2 min) must not hit Garmin each time (Cloudflare/MFA risk), so the raw API response is
+    fetched at most once per CACHE_TTL_S and filtered/limited in memory. Failures are not cached.
+    """
+
+    CACHE_TTL_S = 60.0
+    FETCH_MAX = 100
+    DEFAULT_LIMIT, MAX_LIMIT = 10, 30
+
+    def __init__(self, api_factory):
+        self._api_factory = api_factory
+        self._lock = threading.Lock()
+        self._cache: list[dict] | None = None
+        self._cached_at = 0.0
+
+    def _fetch(self) -> list[dict]:
+        api = self._api_factory()
+        return [_summary(a) for a in api.get_activities(0, self.FETCH_MAX) or []]
+
+    def get(self, since: str | None = None, limit: int = DEFAULT_LIMIT) -> list[dict]:
+        limit = min(max(int(limit), 1), self.MAX_LIMIT)
+        now = time.monotonic()
+        with self._lock:
+            if self._cache is None or now - self._cached_at >= self.CACHE_TTL_S:
+                self._cache = self._fetch()
+                self._cached_at = now
+            activities = self._cache
+        if since:
+            activities = [a for a in activities if a["start"] >= since]
+        return activities[:limit]
+
+
+def make_handler(token: str, ingest: ScaleIngest, feed: ActivitiesFeed) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def _reply(self, code: int, body: dict) -> None:
             data = json.dumps(body).encode()
@@ -140,11 +210,29 @@ def serve(port: int = 8080) -> None:
             self.end_headers()
             self.wfile.write(data)
 
-        def do_GET(self) -> None:  # health check
-            self._reply(200, {"ok": True})
+        def do_GET(self) -> None:
+            url = urlparse(self.path)
+            if url.path == "/":  # health check, open like before
+                return self._reply(200, {"ok": True})
+            if url.path != "/activities":
+                return self._reply(404, {"error": "not found"})
+            if not authorized(self.headers, token):
+                return self._reply(401, {"error": "unauthorized"})
+            params = parse_qs(url.query)
+            try:
+                limit = int((params.get("limit") or [ActivitiesFeed.DEFAULT_LIMIT])[0])
+            except ValueError:
+                return self._reply(400, {"error": "limit must be an integer"})
+            since = (params.get("since") or [None])[0]
+            try:
+                activities = feed.get(_since_key(since) if since else None, limit)
+            except Exception as exc:  # Garmin is down or the login failed: never leak the message (tokens, email)
+                log.warning("activities unavailable: %s", type(exc).__name__)
+                return self._reply(503, {"error": "garmin unavailable"})
+            self._reply(200, {"activities": activities})
 
         def do_POST(self) -> None:
-            if self.path != "/scale" or self.headers.get("Authorization") != f"Bearer {token}":
+            if self.path != "/scale" or not authorized(self.headers, token):
                 return self._reply(401, {"error": "unauthorized"})
             try:
                 payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
@@ -156,4 +244,12 @@ def serve(port: int = 8080) -> None:
         def log_message(self, *args) -> None:  # silence per-request noise
             pass
 
-    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    return Handler
+
+
+def serve(port: int = 8080) -> None:
+    token = os.environ["SCALE_INGEST_TOKEN"]
+    source = GarminSource()  # one lazy client shared by the scale upload and the activities view
+    ingest = ScaleIngest(source._client)
+    feed = ActivitiesFeed(source._client)
+    ThreadingHTTPServer(("0.0.0.0", port), make_handler(token, ingest, feed)).serve_forever()
