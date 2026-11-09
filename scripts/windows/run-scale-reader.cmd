@@ -1,12 +1,13 @@
 @echo off
 REM Wrapper for health-sync scale reader. Runs in a loop, restarts reader.py on exit.
-REM Install directory: C:\Tools\health-sync-scale (set INSTALL_DIR to override)
+REM Install directory: C:\ProgramData\omb-tech-watchdog\bin\health-sync-scale (set INSTALL_DIR to override).
+REM The folder is admin-only (the task runs elevated). Never run it from C:\Tools (user-writable).
 REM Log rotation: if reader.log > 10 MB, move to reader.log.1 before each start.
 REM Passes --idle-exit 600 so the reader exits on a silent BLE stall (wrapper restarts it).
 
 setlocal
 
-if not defined INSTALL_DIR set "INSTALL_DIR=C:\Tools\health-sync-scale"
+if not defined INSTALL_DIR set "INSTALL_DIR=C:\ProgramData\omb-tech-watchdog\bin\health-sync-scale"
 set "PYTHON=%INSTALL_DIR%\venv\Scripts\python.exe"
 set "READER=%INSTALL_DIR%\reader.py"
 set "LOG=%INSTALL_DIR%\reader.log"
