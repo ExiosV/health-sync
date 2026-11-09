@@ -130,6 +130,21 @@ $maskWrite = 2 -bor 4 -bor 16 -bor 64 -bor 256 -bor 65536 -bor 262144 -bor 52428
 # (C:\ and C:\ProgramData let Users create new entries; that cannot replace an existing child.)
 $maskParent = 64 -bor 65536 -bor 262144 -bor 524288 -bor 0x10000000
 
+function Get-ReparsePoints([string]$root) {
+    # Every junction or symlink below $root. The walk never descends into a reparse point.
+    $found = @()
+    $stack = New-Object System.Collections.Stack
+    $stack.Push((New-Object System.IO.DirectoryInfo($root)))
+    while ($stack.Count -gt 0) {
+        $dir = $stack.Pop()
+        foreach ($i in $dir.GetFileSystemInfos()) {
+            if ($i.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { $found += $i.FullName; continue }
+            if ($i -is [System.IO.DirectoryInfo]) { $stack.Push($i) }
+        }
+    }
+    return $found
+}
+
 function Set-LockedDirAcl([string]$path, [switch]$Recurse) {
     # Owner Administrators, protected DACL: SYSTEM + Administrators FullControl, Users ReadAndExecute.
     $sec = New-Object System.Security.AccessControl.DirectorySecurity
@@ -146,10 +161,17 @@ function Set-LockedDirAcl([string]$path, [switch]$Recurse) {
     Set-Acl -LiteralPath $path -AclObject $sec
     if (-not $Recurse) { return }
     # Children: owner Administrators, drop explicit ACEs, inherit only the locked DACL.
+    # Refuse first if the tree holds a reparse point: a recursive icacls must never reach the ACL of a
+    # target outside the install dir. /L also makes icacls act on a link itself, not on its target.
+    $links = @(Get-ReparsePoints $path)
+    if ($links.Count -gt 0) {
+        foreach ($l in $links) { '  reparse point: ' + $l }
+        throw ('install dir {0} holds {1} reparse point(s); remove them, then re-run' -f $path, $links.Count)
+    }
     if (Get-ChildItem -LiteralPath $path -Force | Select-Object -First 1) {
-        & $icacls (Join-Path $path '*') /reset /T /C /Q | Out-Null
+        & $icacls (Join-Path $path '*') /reset /T /C /L /Q | Out-Null
         if ($LASTEXITCODE -ne 0) { throw ('icacls /reset failed on {0} (exit {1})' -f $path, $LASTEXITCODE) }
-        & $icacls $path /setowner '*S-1-5-32-544' /T /C /Q | Out-Null
+        & $icacls $path /setowner '*S-1-5-32-544' /T /C /L /Q | Out-Null
         if ($LASTEXITCODE -ne 0) { throw ('icacls /setowner failed on {0} (exit {1})' -f $path, $LASTEXITCODE) }
     }
 }
@@ -196,6 +218,11 @@ function Assert-InstallDirLocked {
     # Refuse an elevated task in a folder that a non-admin can change.
     $problems = @()
     $problems += @(Get-AclProblems $InstallDir $maskWrite)
+    if (-not ((Get-Item -LiteralPath $InstallDir -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        foreach ($l in @(Get-ReparsePoints $InstallDir)) {
+            $problems += ('{0}: is a reparse point (junction or symlink) inside the install dir' -f $l)
+        }
+    }
     foreach ($name in @('run-scale-reader.cmd', 'reader.py', 'miscale.py', 'venv', 'venv\Scripts\python.exe')) {
         $p = Join-Path $InstallDir $name
         if (Test-Path -LiteralPath $p) { $problems += @(Get-AclProblems $p $maskWrite) }
@@ -223,6 +250,9 @@ function Initialize-InstallDir {
     foreach ($m in $missing) {
         New-Item -ItemType Directory -Path $m | Out-Null
         if ($m -ne $InstallDir) { Set-LockedDirAcl $m; 'created and locked parent ' + $m }
+    }
+    if ((Get-Item -LiteralPath $InstallDir -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+        throw ('install dir is a reparse point (junction or symlink); refusing to lock its target: ' + $InstallDir)
     }
     Set-LockedDirAcl $InstallDir -Recurse
     'locked install dir (owner Administrators; SYSTEM + Administrators FullControl, Users ReadAndExecute): ' + $InstallDir

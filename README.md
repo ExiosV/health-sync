@@ -180,7 +180,10 @@ The installer creates the install dir (and each missing parent) and locks it:
 
 Then it refuses to register the task (and changes nothing else) if a non-admin can change the install dir,
 `run-scale-reader.cmd`, `reader.py`, `miscale.py`, `venv\Scripts\python.exe`, can read `token.txt`,
-or can delete, rename or re-ACL a parent folder, or if a path component is a junction or symlink.
+or can delete, rename or re-ACL a parent folder, or if a path component or any item in the install
+dir tree is a junction or symlink (the tree walk does not follow links). Before the recursive reset
+the installer refuses a tree with links, and every recursive `icacls` call uses `/L`, so it never
+changes the ACL of a link target outside the install dir.
 It also refuses any `-InstallDir` under `C:\Tools`. Check the lock by hand:
 
 ```powershell
