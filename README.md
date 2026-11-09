@@ -157,19 +157,49 @@ Changed:
 
 - **Task name**: `health-sync-scale` (S4U, runs as `DEVICEX2\igorp` in session 0)
 - **Triggers**: `AtStartup` with a 1-minute delay, and every 5 minutes (recovery, see above)
-- **Action**: `cmd.exe /c C:\Tools\health-sync-scale\run-scale-reader.cmd`
+- **Action**: `%ComSpec% /c set INSTALL_DIR=<dir>&& "<dir>\run-scale-reader.cmd"` (full path to `cmd.exe`),
+  `<dir>` = `C:\ProgramData\omb-tech-watchdog\bin\health-sync-scale`
 - **Wrapper** (`run-scale-reader.cmd`): loops forever, restarts `reader.py` on any exit, rotates the log,
   passes `--idle-exit 600`.
-- **Files in `C:\Tools\health-sync-scale\`**: `reader.py`, `miscale.py`, `run-scale-reader.cmd`, `venv\`,
+- **Files in `C:\ProgramData\omb-tech-watchdog\bin\health-sync-scale\`**: `reader.py`, `miscale.py`, `run-scale-reader.cmd`, `venv\`,
   `token.txt`, `pending.jsonl`, `reader.log` (and `reader.log.1` after rotation), the old `run.cmd`,
   backups `health-sync-scale.bak-<ts>.xml` and `<file>.bak-<ts>`.
+- **Host inventory**: all tasks on devicex2 are listed in `exiosv-lab-infra` `docs/k8s/devicex2-host-tasks.md`.
+
+### Install dir lock
+
+The task runs elevated (`RunLevel Highest`). Whoever can write its folder can run code as admin.
+Therefore the install dir is admin-only, and it is never `C:\Tools`: Authenticated Users can write there.
+The live install moved from `C:\Tools\health-sync-scale` to the locked folder on 2026-11-09.
+
+The installer creates the install dir (and each missing parent) and locks it:
+
+- install dir: owner Administrators, inheritance off, SYSTEM + Administrators FullControl, Users
+  ReadAndExecute; every file and folder below it is reset to inherit only this DACL;
+- `token.txt`: SYSTEM + Administrators FullControl only (Users cannot read it).
+
+Then it refuses to register the task (and changes nothing else) if a non-admin can change the install dir,
+`run-scale-reader.cmd`, `reader.py`, `miscale.py`, `venv\Scripts\python.exe`, can read `token.txt`,
+or can delete, rename or re-ACL a parent folder, or if a path component or any item in the install
+dir tree is a junction or symlink (the tree walk does not follow links). Before the recursive reset
+the installer refuses a tree with links, and every recursive `icacls` call uses `/L`, so it never
+changes the ACL of a link target outside the install dir.
+It also refuses any `-InstallDir` under `C:\Tools`. Check the lock by hand:
+
+```powershell
+icacls C:\ProgramData\omb-tech-watchdog\bin\health-sync-scale
+icacls C:\ProgramData\omb-tech-watchdog\bin\health-sync-scale\token.txt
+```
 
 ### Prerequisites
 
 - An **elevated** PowerShell (Run as administrator) on devicex2; Windows PowerShell 5.1 is enough.
 - A checkout of this repo on devicex2, passed as `-SourceDir` (the repo root).
-- `C:\Tools\health-sync-scale\venv` (with `bleak`) and `C:\Tools\health-sync-scale\token.txt` already
-  exist. The installer never creates or touches `venv`, `token.txt` or `pending.jsonl`.
+- `venv` (with `bleak`) and `token.txt` already exist in the install dir. The installer never creates
+  or changes the content of `venv`, `token.txt` or `pending.jsonl`; it only locks their ACLs. To move
+  from an old `C:\Tools\health-sync-scale`, stop the task, copy `venv`, `token.txt` and `pending.jsonl`
+  into the install dir, then run the installer. The original Interactive task backup XML stays in the
+  old folder; copy it too if you want it as the undo point.
 
 ### Install / update
 
@@ -202,7 +232,7 @@ Get-CimInstance Win32_Process -Filter "Name like 'python%' AND CommandLine like 
   Select-Object ProcessId, SessionId, CommandLine
 
 # Recent log: the wrapper writes "starting reader" and "reader exited with code N" (3 = idle-exit)
-Get-Content C:\Tools\health-sync-scale\reader.log -Tail 20
+Get-Content C:\ProgramData\omb-tech-watchdog\bin\health-sync-scale\reader.log -Tail 20
 
 # No cmd/python window left in a user session (expect no output)
 Get-Process cmd, python -ErrorAction SilentlyContinue | Where-Object SessionId -ne 0
@@ -222,12 +252,13 @@ Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*health-syn
 
 # 2. Restore the ORIGINAL task: the oldest backup, whose principal is Interactive. The cmd window comes
 #    back at the next logon (or start it now with Start-ScheduledTask).
-$bak = Get-ChildItem C:\Tools\health-sync-scale\health-sync-scale.bak-*.xml | Sort-Object Name |
+$bak = Get-ChildItem C:\ProgramData\omb-tech-watchdog\bin\health-sync-scale\health-sync-scale.bak-*.xml | Sort-Object Name |
   Where-Object { (Get-Content $_.FullName -Raw) -match 'InteractiveToken' } | Select-Object -First 1
 Register-ScheduledTask -Xml (Get-Content $bak.FullName -Raw) -TaskName health-sync-scale -Force
 
 # 3. If needed, restore the old files, e.g.
-#    Copy-Item C:\Tools\health-sync-scale\reader.py.bak-<ts> C:\Tools\health-sync-scale\reader.py -Force
+#    $d = 'C:\ProgramData\omb-tech-watchdog\bin\health-sync-scale'
+#    Copy-Item "$d\reader.py.bak-<ts>" "$d\reader.py" -Force
 #    (same for miscale.py; run.cmd is never overwritten). Keeping the new reader.py is also fine:
 #    it defaults to --idle-exit 600 and the old run.cmd loops (goto loop), so it restarts it.
 ```
