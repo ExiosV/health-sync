@@ -55,8 +55,29 @@ backoff (`CALENDAR_WRITE_RETRIES`); an event that was deleted keeps a cancelled 
 revives it with `status=confirmed` instead of failing.
 Each event gets a deterministic id from the source record, so re-runs update it in place instead of duplicating.
 Enable the Google Calendar API in the OAuth project and issue the calendar token (`get_google_token.py ... calendar`).
-The `gmail` set issues a read-only Gmail token for the omb-agent-core job search; it is stored as
-`GMAIL_READ_REFRESH_TOKEN` in the same env file and is not used by health-sync.
+
+Gmail read token (`gmail` set). health-sync does not use this token; the helper only issues it for the job-search
+sweep of omb-agent-core. Do the steps on the machine that holds the env file (`$HEALTH_SYNC_ENV`, default
+`~/.config/health-sync/secrets.env`):
+
+1. Check the prerequisites. `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are in the env file. The Gmail API is enabled
+   in the OAuth project (Google Cloud console: APIs & Services > Library > Gmail API > Enable). The OAuth app has the
+   publishing status "In production" (Google Auth Platform > Audience). In the status "Testing" the account must be a
+   listed test user and the refresh token expires after 7 days, which stops the sweep again.
+2. Run `python3 scripts/get_google_token.py url gmail` and open the printed address in a browser.
+3. Sign in with the Google account of the mailbox that the sweep must read (the mailbox that receives the job digests).
+4. An app that Google has not verified shows "Google hasn't verified this app": select Advanced, then "Go to <app name>
+   (unsafe)". This is normal for a personal OAuth app. Allow the one permission "View your email messages and
+   settings" (`gmail.readonly`).
+5. The browser ends on `http://127.0.0.1:1/?code=...` with a connection error. This is expected. Copy the full address
+   from the address bar. The code in it works once and for a few minutes only.
+6. Run `python3 scripts/get_google_token.py exchange '<address>' gmail`. Success is the one line
+   `stored GMAIL_READ_REFRESH_TOKEN; granted scopes: https://www.googleapis.com/auth/gmail.readonly`. The token is not
+   printed. On an error, start again from step 2.
+7. Where the token goes. The helper writes it only to the local env file as `GMAIL_READ_REFRESH_TOKEN`. The sweep reads
+   the env variable with the same name in its own deployment. The move of the value from the env file to the secret
+   store of that deployment is not a part of health-sync and is not automatic: it is a separate step in the repo that
+   deploys the sweep. Until that step is done, the sweep cannot read the mailbox.
 
 Time zones: Garmin gives both local wall time and GMT for activities, sleep, naps, weigh-ins and pressure readings, so
 every timed event is written with the exact UTC offset of the place where it happened (RFC 3339, e.g. `+02:00`). Travel
