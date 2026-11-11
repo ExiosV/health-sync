@@ -4,15 +4,16 @@ this runs ($HEALTH_SYNC_ENV, default ~/.config/health-sync/secrets.env), without
 Least privilege: one token per feature.
   drive      GOOGLE_REFRESH_TOKEN           scope: drive (Drive + Sheets)
   calendar   GOOGLE_CALENDAR_REFRESH_TOKEN  scopes: calendar.events + calendar.calendarlist.readonly
-  all        GOOGLE_REFRESH_TOKEN           all of the above in one token (legacy, broader than needed)
+  gmail      GMAIL_READ_REFRESH_TOKEN       scope: gmail.readonly (for the omb-agent-core job search, not health-sync)
+  all        GOOGLE_REFRESH_TOKEN           drive + calendar in one token (legacy, broader than needed)
 
-  python3 get_google_token.py url [drive|calendar|all]               prints the consent URL (default: drive)
-  python3 get_google_token.py exchange '<URL>' [drive|calendar|all]  <URL> = the address the browser ends up on after
-                                                                     consent (http://127.0.0.1:1/?code=... fails to
-                                                                     load; that is expected)
+  python3 get_google_token.py url [drive|calendar|gmail|all]               prints the consent URL (default: drive)
+  python3 get_google_token.py exchange '<URL>' [drive|calendar|gmail|all]  <URL> = the address the browser ends up on
+                                                                           after consent (http://127.0.0.1:1/?code=...
+                                                                           fails to load; that is expected)
 
 GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must already be in the env file. The OAuth project needs the Google Drive,
-Google Sheets and Google Calendar APIs enabled.
+Google Sheets and Google Calendar APIs enabled. The gmail set also needs the Gmail API enabled in the OAuth project.
 """
 import json
 import os
@@ -25,6 +26,7 @@ G = "https://www.googleapis.com/auth/"
 SETS = {
     "drive": ([G + "drive"], "GOOGLE_REFRESH_TOKEN"),
     "calendar": ([G + "calendar.events", G + "calendar.calendarlist.readonly"], "GOOGLE_CALENDAR_REFRESH_TOKEN"),
+    "gmail": ([G + "gmail.readonly"], "GMAIL_READ_REFRESH_TOKEN"),
     "all": ([G + "drive", G + "calendar.events", G + "calendar.calendarlist.readonly"], "GOOGLE_REFRESH_TOKEN"),
 }
 REDIRECT = "http://127.0.0.1:1/"

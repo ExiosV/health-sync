@@ -23,7 +23,7 @@ python -m health_sync run garmin-to-calendar            # activities, sleep, nap
 python -m health_sync calendar-ls                        # list calendars (id + name) to configure the target
 python -m health_sync drive-ls --path "<Drive folder path>"
 python -m health_sync init-sheet --path "<Drive folder path>" --name "<file name>"   # prints the spreadsheet id
-python3 scripts/get_google_token.py url|exchange [drive|calendar]   # one-off, stdlib only: Google refresh token
+python3 scripts/get_google_token.py url|exchange [drive|calendar|gmail]   # one-off, stdlib only: Google refresh token
 ```
 
 Google access is a user OAuth refresh token (`GOOGLE_CLIENT_ID/SECRET/REFRESH_TOKEN`). OAuth refresh, Drive and the
@@ -35,7 +35,7 @@ feature - `GOOGLE_REFRESH_TOKEN` with the `drive` scope (Drive + Sheets) and, op
 with `calendar.events` + `calendar.calendarlist.readonly` (no full `calendar` scope). Without the second token the first
 one is used for the calendar too (it must then carry the calendar scopes). Tokens are refreshed without asking for scopes,
 so a token missing a newer scope only fails the feature that needs it. Get a token with
-`python3 scripts/get_google_token.py url|exchange [drive|calendar|all]`. A service account works as a fallback. Garmin tokens are kept in `GARMINTOKENS`. If direct Garmin login is blocked
+`python3 scripts/get_google_token.py url|exchange [drive|calendar|gmail|all]`. A service account works as a fallback. Garmin tokens are kept in `GARMINTOKENS`. If direct Garmin login is blocked
 (Cloudflare 429/403), `python -m health_sync garmin-ticket-login` exchanges a one-time SSO ticket from an already
 signed-in browser (`GARMIN_TICKET`) for saved tokens. Garmin access uses the unofficial `garminconnect` library and can
 break when Garmin changes its API.
@@ -55,6 +55,8 @@ backoff (`CALENDAR_WRITE_RETRIES`); an event that was deleted keeps a cancelled 
 revives it with `status=confirmed` instead of failing.
 Each event gets a deterministic id from the source record, so re-runs update it in place instead of duplicating.
 Enable the Google Calendar API in the OAuth project and issue the calendar token (`get_google_token.py ... calendar`).
+The `gmail` set issues a read-only Gmail token for the omb-agent-core job search; it is stored as
+`GMAIL_READ_REFRESH_TOKEN` in the same env file and is not used by health-sync.
 
 Time zones: Garmin gives both local wall time and GMT for activities, sleep, naps, weigh-ins and pressure readings, so
 every timed event is written with the exact UTC offset of the place where it happened (RFC 3339, e.g. `+02:00`). Travel
