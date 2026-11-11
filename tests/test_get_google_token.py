@@ -3,6 +3,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.parse
 
 SCRIPT = os.path.join(os.path.dirname(__file__), "..", "scripts", "get_google_token.py")
 
@@ -21,9 +22,11 @@ class GetGoogleTokenTest(unittest.TestCase):
     def test_gmail_url_asks_only_for_gmail_readonly(self):
         res = self.run_script("url", "gmail")
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertIn("scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgmail.readonly", res.stdout)
-        self.assertIn("access_type=offline", res.stdout)
-        self.assertNotIn("drive", res.stdout)
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(res.stdout.strip()).query)
+        # exact match: an extra scope in the gmail set must fail the test
+        self.assertEqual(query["scope"], ["https://www.googleapis.com/auth/gmail.readonly"])
+        self.assertEqual(query["access_type"], ["offline"])
+        self.assertEqual(query["prompt"], ["consent"])
 
     def test_all_set_has_no_gmail(self):
         res = self.run_script("url", "all")
